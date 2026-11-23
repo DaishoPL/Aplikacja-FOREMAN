@@ -1,0 +1,273 @@
+<div class="bg-white rounded-lg shadow-sm p-6 md:p-8 border border-gray-100 animate-fade-in">
+  <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6 border-b pb-4">
+    <div>
+      <h2 class="text-2xl font-bold text-seaviaBlue">Pokoje i wymiary</h2>
+      <p class="text-sm text-slate-500 mt-1">Zarządzaj katalogiem pokoi, wymiarami i metrażem dla wszystkich stref i pokładów.</p>
+    </div>
+    <button type="button" onclick="resetRoomForm()" class="bg-seaviaBlue hover:bg-[#0a1e38] text-white font-bold py-2.5 px-4 rounded-md shadow-sm transition-all flex items-center">
+      <i class="fa-solid fa-plus mr-2"></i> Nowy pokój
+    </button>
+  </div>
+
+  <div class="grid grid-cols-1 xl:grid-cols-[1.5fr_0.9fr] gap-6">
+    <div class="rounded-lg border border-slate-200 overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-200">
+              <th class="p-3 font-bold">Pokład</th>
+              <th class="p-3 font-bold">Nazwa / numer</th>
+              <th class="p-3 font-bold text-right">A × B</th>
+              <th class="p-3 font-bold text-right">H</th>
+              <th class="p-3 font-bold text-right">Pow. podłogi</th>
+              <th class="p-3 font-bold text-right">Pow. sufitu</th>
+              <th class="p-3 font-bold text-right">Pow. ścian</th>
+              <th class="p-3 font-bold text-right">Akcje</th>
+            </tr>
+          </thead>
+          <tbody id="roomsTableBody">
+            <tr>
+              <td colspan="8" class="p-8 text-center text-slate-400">
+                <i class="fa-solid fa-ellipsis fa-fade text-2xl"></i>
+                <p class="mt-2 text-sm">Pobieranie katalogu pokoi...</p>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="bg-slate-50 border border-slate-200 rounded-lg p-5">
+      <h3 id="roomFormTitle" class="text-lg font-bold text-slate-700 mb-4">Dodaj pokój</h3>
+
+      <form id="roomForm" onsubmit="event.preventDefault(); saveRoomForm();">
+        <input type="hidden" id="roomRecordId">
+        <input type="hidden" id="roomArea">
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Pokład</label>
+            <input id="roomDeck" type="text" class="w-full border border-slate-300 rounded-md p-2.5 bg-white focus:ring-2 focus:ring-seaviaBlue focus:outline-none" placeholder="np. DK1" required>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Nazwa pokoju</label>
+            <input id="roomName" type="text" class="w-full border border-slate-300 rounded-md p-2.5 bg-white focus:ring-2 focus:ring-seaviaBlue focus:outline-none" placeholder="np. Salon, Sypialnia, WC">
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Numer pokoju</label>
+            <input id="roomNumber" type="text" class="w-full border border-slate-300 rounded-md p-2.5 bg-white focus:ring-2 focus:ring-seaviaBlue focus:outline-none" placeholder="np. 101">
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Wymiar A (m)</label>
+              <input id="roomWidth" type="number" min="0" step="0.01" class="w-full border border-slate-300 rounded-md p-2.5 bg-white focus:ring-2 focus:ring-seaviaBlue focus:outline-none" placeholder="0.00" oninput="recalculateRoomAreas()">
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Wymiar B (m)</label>
+              <input id="roomLength" type="number" min="0" step="0.01" class="w-full border border-slate-300 rounded-md p-2.5 bg-white focus:ring-2 focus:ring-seaviaBlue focus:outline-none" placeholder="0.00" oninput="recalculateRoomAreas()">
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Wysokość H (m)</label>
+              <input id="roomHeight" type="number" min="0" step="0.01" class="w-full border border-slate-300 rounded-md p-2.5 bg-white focus:ring-2 focus:ring-seaviaBlue focus:outline-none" placeholder="0.00" oninput="recalculateRoomAreas()">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Pow. podłogi</label>
+              <input id="roomSurface" type="number" min="0" step="0.01" class="w-full border border-slate-300 rounded-md p-2.5 bg-slate-100 text-slate-700 font-bold focus:outline-none" placeholder="0.00" readonly>
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Pow. sufitu</label>
+              <input id="roomCeilingSurface" type="number" min="0" step="0.01" class="w-full border border-slate-300 rounded-md p-2.5 bg-slate-100 text-slate-700 font-bold focus:outline-none" placeholder="0.00" readonly>
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Pow. ścian</label>
+              <input id="roomWallSurface" type="number" min="0" step="0.01" class="w-full border border-slate-300 rounded-md p-2.5 bg-slate-100 text-slate-700 font-bold focus:outline-none" placeholder="0.00" readonly>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-6 flex flex-col sm:flex-row gap-3">
+          <button type="submit" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-md shadow-sm transition-all">
+            <i class="fa-solid fa-floppy-disk mr-2"></i> Zapisz
+          </button>
+          <button type="button" onclick="deleteRoomRecordFromForm()" id="deleteRoomBtn" class="hidden bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 px-4 rounded-md shadow-sm transition-all">
+            <i class="fa-solid fa-trash mr-2"></i> Usuń
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  function recalculateRoomAreas() {
+    const a = Number(document.getElementById('roomWidth').value || 0);
+    const b = Number(document.getElementById('roomLength').value || 0);
+    const h = Number(document.getElementById('roomHeight').value || 0);
+    const floor = a * b;
+    const ceiling = a * b;
+    const wall = (2 * (a + b)) * h;
+    document.getElementById('roomSurface').value = floor > 0 ? floor.toFixed(2) : '';
+    document.getElementById('roomCeilingSurface').value = ceiling > 0 ? ceiling.toFixed(2) : '';
+    document.getElementById('roomWallSurface').value = wall > 0 ? wall.toFixed(2) : '';
+  }
+
+  function renderRoomsTable(data) {
+    const tbody = document.getElementById('roomsTableBody');
+    if (!tbody) return;
+
+    const rooms = (data && data.rooms) ? data.rooms : [];
+    if (!rooms.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-500 font-medium">Brak pokoi w katalogu. Dodaj pierwszy pokój.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rooms.map(room => {
+      const a = Number(room.width || 0);
+      const b = Number(room.length || 0);
+      const h = Number(room.height || 0);
+      const floor = Number(room.surface || (a && b ? a * b : 0) || 0);
+      const ceiling = Number(room.ceilingSurface || floor || 0);
+      const wall = Number(room.wallSurface || (a && b && h ? (2 * (a + b)) * h : 0) || 0);
+      const dims = (a > 0 || b > 0) ? `${a || 0}m × ${b || 0}m` : '—';
+      const roomLabel = [room.name, room.room].filter(Boolean).join(' / ') || room.room || room.name || '—';
+      return `
+        <tr class="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+          <td class="p-3 font-bold text-slate-700">${room.deck || '—'}</td>
+          <td class="p-3 font-bold text-slate-700">${roomLabel}</td>
+          <td class="p-3 text-right text-slate-600">${dims}</td>
+          <td class="p-3 text-right text-slate-600">${h ? h.toFixed(2) + 'm' : '—'}</td>
+          <td class="p-3 text-right font-bold text-candidoRed">${floor.toFixed(2)} m²</td>
+          <td class="p-3 text-right font-bold text-violet-600">${ceiling.toFixed(2)} m²</td>
+          <td class="p-3 text-right font-bold text-indigo-600">${wall.toFixed(2)} m²</td>
+          <td class="p-3">
+            <div class="flex justify-end gap-2">
+              <button type="button" onclick="editRoomRecord(${room.id || 0}, '${String(room.deck || '').replace(/'/g, "\\'")}', '${String(room.area || '').replace(/'/g, "\\'")}', '${String(room.name || '').replace(/'/g, "\\'")}', '${String(room.room || '').replace(/'/g, "\\'")}', ${Number(room.width || 0)}, ${Number(room.length || 0)}, ${Number(room.height || 0)}, ${Number(room.surface || 0)}, ${Number(room.ceilingSurface || room.surface || 0)}, ${Number(room.wallSurface || 0)})" class="text-seaviaBlue hover:text-[#0a1e38]" title="Edytuj">
+                <i class="fa-solid fa-pen-to-square"></i>
+              </button>
+              <button type="button" onclick="deleteRoomRecord(${room.id || 0})" class="text-red-500 hover:text-red-700" title="Usuń">
+                <i class="fa-solid fa-trash"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function resetRoomForm() {
+    const form = document.getElementById('roomForm');
+    if (!form) return;
+    form.reset();
+    document.getElementById('roomRecordId').value = '';
+    document.getElementById('roomFormTitle').innerText = 'Dodaj pokój';
+    document.getElementById('deleteRoomBtn').classList.add('hidden');
+    document.getElementById('roomSurface').value = '';
+    document.getElementById('roomCeilingSurface').value = '';
+    document.getElementById('roomWallSurface').value = '';
+
+    const deck = document.getElementById('deckSelect')?.value || '';
+    if (deck) document.getElementById('roomDeck').value = deck;
+    const selectedRoom = document.getElementById('roomSelect')?.value || '';
+    if (selectedRoom && selectedRoom !== '__CUSTOM__') document.getElementById('roomNumber').value = selectedRoom;
+  }
+
+  function editRoomRecord(id, deck, area, name, room, width, length, height, surface, ceilingSurface, wallSurface) {
+    const form = document.getElementById('roomForm');
+    if (!form) return;
+
+    document.getElementById('roomRecordId').value = id || '';
+    document.getElementById('roomDeck').value = deck || '';
+    document.getElementById('roomArea').value = area || '';
+    document.getElementById('roomName').value = name || '';
+    document.getElementById('roomNumber').value = room || '';
+    document.getElementById('roomWidth').value = width || 0;
+    document.getElementById('roomLength').value = length || 0;
+    document.getElementById('roomHeight').value = height || 0;
+    document.getElementById('roomSurface').value = surface || 0;
+    document.getElementById('roomCeilingSurface').value = ceilingSurface || 0;
+    document.getElementById('roomWallSurface').value = wallSurface || 0;
+    document.getElementById('roomFormTitle').innerText = 'Edytuj pokój';
+    document.getElementById('deleteRoomBtn').classList.remove('hidden');
+    switchTab('rooms');
+  }
+
+  function saveRoomForm() {
+    const width = Number(document.getElementById('roomWidth').value || 0);
+    const length = Number(document.getElementById('roomLength').value || 0);
+    const height = Number(document.getElementById('roomHeight').value || 0);
+    const floor = width && length ? width * length : Number(document.getElementById('roomSurface').value || 0);
+    const ceiling = width && length ? width * length : Number(document.getElementById('roomCeilingSurface').value || 0);
+    const wall = (width && length && height) ? (2 * (width + length)) * height : Number(document.getElementById('roomWallSurface').value || 0);
+
+    const payload = {
+      id: document.getElementById('roomRecordId').value || '',
+      deck: document.getElementById('roomDeck').value,
+      area: document.getElementById('roomArea').value || '',
+      name: document.getElementById('roomName').value,
+      room: document.getElementById('roomNumber').value,
+      width: width,
+      length: length,
+      height: height,
+      surface: floor,
+      ceilingSurface: ceiling,
+      wallSurface: wall
+    };
+
+    if (!payload.deck || (!payload.name && !payload.room)) {
+      alert('Uzupełnij pokład i nazwę lub numer pokoju.');
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success) {
+          alert(res.message || 'Pokój zapisany poprawnie.');
+          fetchData();
+          resetRoomForm();
+        } else {
+          alert('Błąd: ' + (res ? res.message : 'Nie udało się zapisać pokoju.'));
+        }
+      })
+      .withFailureHandler(() => {
+        alert('Błąd: Nie udało się zapisać pokoju.');
+      })
+      .saveRoomRecord(payload);
+  }
+
+  function deleteRoomRecord(id) {
+    if (!id && id !== 0) return;
+    if (!confirm('Na pewno usunąć ten pokój z katalogu?')) return;
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        if (res && res.success) {
+          alert(res.message || 'Pokój usunięty.');
+          fetchData();
+        } else {
+          alert('Błąd: ' + (res ? res.message : 'Nie udało się usunąć pokoju.'));
+        }
+      })
+      .deleteRoomRecord(id);
+  }
+
+  function deleteRoomRecordFromForm() {
+    const id = Number(document.getElementById('roomRecordId').value || 0);
+    if (!id) return;
+    deleteRoomRecord(id);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.renderRoomsTable = renderRoomsTable;
+    window.resetRoomForm = resetRoomForm;
+    window.editRoomRecord = editRoomRecord;
+    window.saveRoomForm = saveRoomForm;
+    window.deleteRoomRecord = deleteRoomRecord;
+    window.deleteRoomRecordFromForm = deleteRoomRecordFromForm;
+  }
+</script>
