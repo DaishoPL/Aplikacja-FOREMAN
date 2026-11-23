@@ -1,0 +1,341 @@
+<div class="bg-white rounded-lg shadow-sm p-4 md:p-8 border border-gray-100 animate-fade-in">
+  <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4 gap-4">
+    <div>
+      <h2 class="text-2xl font-bold text-seaviaBlue"><i class="fa-solid fa-file-invoice mr-2 text-candidoRed"></i> Zlecenia i Protokoły</h2>
+      <p class="text-sm text-slate-500 mt-1">Generuje zestawienie godzin dla Zlecenia oraz Protokołu zdawczo-odbiorczego dla wybranego zakresu dat.</p>
+    </div>
+  </div>
+
+  <!-- Panel Sterowania -->
+  <div class="bg-slate-50 p-5 rounded-lg border border-slate-200 mb-8 flex flex-col gap-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-end w-full">
+      <div>
+        <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Data od</label>
+        <input type="date" id="zipDateFrom" class="w-full border border-slate-300 rounded p-2.5 focus:ring-2 focus:ring-seaviaBlue bg-white font-medium text-slate-700">
+      </div>
+      <div>
+        <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Data do</label>
+        <input type="date" id="zipDateTo" class="w-full border border-slate-300 rounded p-2.5 focus:ring-2 focus:ring-seaviaBlue bg-white font-medium text-slate-700">
+      </div>
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 min-h-[46px] pb-1 md:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer group">
+          <input type="checkbox" id="zipIncludeBreaks" class="w-5 h-5 rounded text-seaviaBlue focus:ring-seaviaBlue border-slate-300">
+          <span class="text-sm font-bold text-slate-700 group-hover:text-seaviaBlue transition-colors">Wliczaj przerwę (Break) do czasu pracy</span>
+        </label>
+        <div class="w-full sm:w-auto flex flex-col sm:flex-row gap-3">
+          <button onclick="generateZleceniaIProtokoly()" id="btnGenerateZip" class="w-full sm:w-auto bg-seaviaBlue hover:bg-[#0a1e38] text-white font-bold py-2.5 px-6 rounded shadow-sm transition-all inline-flex items-center justify-center gap-2 text-sm">
+            <i class="fa-solid fa-gears"></i><span>Generuj</span>
+          </button>
+          <button onclick="generateReportFiles()" id="btnGenerateReportFiles" class="w-full sm:w-auto bg-candidoRed hover:bg-red-700 text-white font-bold py-2.5 px-6 rounded shadow-sm transition-all text-sm inline-flex items-center justify-center gap-2">
+            <i class="fa-solid fa-download"></i><span>Utwórz PDF i arkusz</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Miejsce na informacje o pustej bazie lub ładowaniu -->
+  <div id="zipEmptyState" class="bg-slate-50 p-10 rounded-lg border border-slate-200 text-center text-slate-500">
+    <i class="fa-solid fa-file-circle-question text-4xl mb-4 text-slate-300 block"></i>
+    <p class="font-medium text-lg mb-2">Brak wygenerowanych danych</p>
+    <p class="text-sm">Wybierz zakres dat i kliknij "Generuj", aby zbudować zestawienie godzin dla Zlecenia i Protokołu zdawczo-odbiorczego.</p>
+  </div>
+
+  <!-- Kontener na wygenerowane zestawienia pogrupowane per wykonawca -->
+  <div id="zipContainer" class="hidden flex flex-col gap-8">
+    <!-- Wstrzykiwane dynamicznie przez JS -->
+  </div>
+</div>
+
+<!-- Modal z podglądem HTML dokumentów (Zlecenie + Protokół) -->
+<div id="zipPreviewModal" class="hidden fixed inset-0 z-[70] bg-slate-900/60 p-4 flex items-start justify-center overflow-y-auto" role="dialog" aria-modal="true">
+  <div class="w-full max-w-3xl my-6">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-white font-bold text-lg"><i class="fa-solid fa-eye mr-2"></i> Podgląd dokumentów</h3>
+      <button onclick="closeZipPreview()" class="text-white hover:text-slate-200" aria-label="Zamknij"><i class="fa-solid fa-xmark text-2xl"></i></button>
+    </div>
+    <div id="zipPreviewPages" class="flex flex-col gap-6"></div>
+  </div>
+</div>
+
+<script>
+  let lastZipData = null;
+
+  function generateZleceniaIProtokoly() {
+    const btn = document.getElementById('btnGenerateZip');
+    const dateFrom = document.getElementById('zipDateFrom').value;
+    const dateTo = document.getElementById('zipDateTo').value;
+    const includeBreaks = document.getElementById('zipIncludeBreaks').checked;
+
+    if (!dateFrom || !dateTo) { alert("Wybierz datę od i datę do."); return; }
+    if (dateTo < dateFrom) { alert("Data do nie może być wcześniejsza niż data od."); return; }
+
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Generowanie...';
+    btn.disabled = true;
+
+    google.script.run
+      .withSuccessHandler(res => {
+        btn.innerHTML = '<i class="fa-solid fa-gears mr-2"></i> Generuj';
+        btn.disabled = false;
+        if (!res || !res.success) {
+          alert("Błąd generowania: " + (res ? res.message : "Brak odpowiedzi serwera."));
+          return;
+        }
+        renderZip(res);
+      })
+      .withFailureHandler(err => {
+        alert("Błąd generowania: " + err);
+        btn.innerHTML = '<i class="fa-solid fa-gears mr-2"></i> Generuj';
+        btn.disabled = false;
+      })
+      .generateZleceniaIProtokolyData(dateFrom, dateTo, includeBreaks);
+  }
+
+  function generateReportFiles() {
+    const btn = document.getElementById('btnGenerateReportFiles');
+    const dateFrom = document.getElementById('zipDateFrom').value;
+    const dateTo = document.getElementById('zipDateTo').value;
+    const includeBreaks = document.getElementById('zipIncludeBreaks').checked;
+    if (!dateFrom || !dateTo) { alert('Wybierz datę od i datę do.'); return; }
+    if (dateTo < dateFrom) { alert('Data do nie może być wcześniejsza niż data od.'); return; }
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Tworzenie plików...';
+    google.script.run
+      .withSuccessHandler(res => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-download"></i><span>Utwórz PDF i arkusz</span>';
+        if (!res || !res.success) { alert('Błąd tworzenia plików: ' + (res ? res.message : 'Brak odpowiedzi.')); return; }
+        const links = (res.files || []).map(file => `${file.technician}: Zlecenie ${file.zlecenie}, Protokół ${file.protokol}, Arkusz ${file.arkusz}`).join('\n');
+        alert('Utworzono pliki PDF i arkusze Google:\n' + links);
+      })
+      .withFailureHandler(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-download"></i><span>Utwórz PDF i arkusz</span>';
+        alert('Błąd tworzenia plików: ' + err);
+      })
+      .generateZleceniaIProtokolyFiles(dateFrom, dateTo, includeBreaks);
+  }
+
+  function renderZip(data) {
+    lastZipData = data;
+    const container = document.getElementById('zipContainer');
+    const emptyState = document.getElementById('zipEmptyState');
+    const techNames = Object.keys(data.technicians || {});
+
+    if (techNames.length === 0) {
+      container.classList.add('hidden');
+      emptyState.innerHTML = '<i class="fa-regular fa-folder-open text-4xl mb-4 text-slate-300 block"></i><p class="font-medium">Brak danych.</p><p class="text-sm">Nie znaleziono przepracowanych godzin techników w wybranym zakresie dat.</p>';
+      emptyState.classList.remove('hidden');
+      return;
+    }
+
+    emptyState.classList.add('hidden');
+    container.innerHTML = '';
+
+    techNames.sort((a, b) => a.localeCompare(b)).forEach(techName => {
+      const tech = data.technicians[techName];
+
+      let html = `
+        <div class="bg-white border border-slate-300 rounded-lg shadow-sm overflow-hidden zip-card">
+          <div class="bg-slate-100 p-4 border-b border-slate-300 flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+            <div>
+              <h3 class="font-black text-seaviaBlue text-base uppercase tracking-wider">${techName}</h3>
+              <p class="text-[11px] text-slate-500 font-bold uppercase mt-1 tracking-widest">Zakres: ${data.dateFrom} &ndash; ${data.dateTo}</p>
+            </div>
+            <div class="text-xs text-slate-600 font-medium flex flex-col sm:items-end gap-2">
+              <span>Numer umowy: <span class="font-bold text-slate-800">${tech.contractNumber || '—'}</span></span>
+              <span>Stawka: <span class="font-bold text-slate-800">${tech.rate.toFixed(2)}</span></span>
+              <button onclick="openZipPreview('${techName.replace(/'/g, "\\'")}')" class="bg-white border border-slate-300 hover:bg-slate-50 text-seaviaBlue font-bold py-1.5 px-3 rounded shadow-sm text-[11px] flex items-center gap-1.5">
+                <i class="fa-solid fa-eye"></i> Podgląd HTML
+              </button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-50 text-slate-600 border-b border-slate-300">
+                  <th class="p-3 border-r border-slate-300 w-10 text-center">Lp</th>
+                  <th class="p-3 border-r border-slate-300">Zakres usług</th>
+                  <th class="p-3 border-r border-slate-300 text-center bg-amber-50">Cena jednostkowa</th>
+                  <th class="p-3 border-r border-slate-300 text-center">Waluta</th>
+                  <th class="p-3 text-center">Jednostka miary</th>
+                </tr>
+              </thead>
+              <tbody>
+      `;
+
+      tech.orderLines.forEach(line => {
+        html += `
+                <tr class="border-b border-slate-200 hover:bg-slate-50 transition-colors">
+                  <td class="p-3 border-r border-slate-300 text-center font-bold text-slate-500">${line.lp}</td>
+                  <td class="p-3 border-r border-slate-300 font-medium text-slate-800">${line.label}</td>
+                  <td class="p-3 border-r border-slate-300 text-center font-mono text-amber-700 font-bold">${Number(line.unitPrice || 0).toFixed(2)}</td>
+                  <td class="p-3 border-r border-slate-300 text-center">€</td>
+                  <td class="p-3 text-center text-slate-500">${line.unit}</td>
+                </tr>
+        `;
+      });
+
+      html += `
+              </tbody>
+              <tfoot>
+                <tr class="bg-slate-100 border-t-2 border-slate-300 font-black">
+                  <td class="p-3 border-r border-slate-300" colspan="3">RAZEM ZLECENIE</td>
+                  <td class="p-3 border-r border-slate-300"></td>
+                  <td class="p-3 border-r border-slate-300"></td>
+                  <td class="p-3"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div class="p-4 border-t border-slate-200">
+            <h4 class="font-black text-seaviaBlue mb-3">Protokół zdawczo-odbiorczy</h4>
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-50 text-slate-600 border-b border-slate-300">
+                  <th class="p-3 border-r border-slate-300 w-10 text-center">Lp</th>
+                  <th class="p-3 border-r border-slate-300">Zakres usług</th>
+                  <th class="p-3 border-r border-slate-300 text-center">Cena jednostkowa</th>
+                  <th class="p-3 border-r border-slate-300 text-center">Waluta</th>
+                  <th class="p-3 border-r border-slate-300 text-center">Jednostka</th>
+                  <th class="p-3 border-r border-slate-300 text-center bg-blue-50/50">Ilość</th>
+                  <th class="p-3 text-center bg-emerald-50">Wartość</th>
+                </tr>
+              </thead>
+              <tbody>${tech.protocolLines.map(line => `
+                <tr class="border-b border-slate-200">
+                  <td class="p-3 border-r border-slate-300 text-center">${line.lp}</td>
+                  <td class="p-3 border-r border-slate-300">${line.label}</td>
+                  <td class="p-3 border-r border-slate-300 text-center font-mono text-amber-700">${Number(line.unitPrice || 0).toFixed(2)}</td>
+                  <td class="p-3 border-r border-slate-300 text-center">€</td>
+                  <td class="p-3 border-r border-slate-300 text-center">${line.unit}</td>
+                  <td class="p-3 border-r border-slate-300 text-center font-mono text-seaviaBlue font-bold">${Number(line.protocolAmount ?? line.amount ?? line.hours).toFixed(String(line.unit || '').toLowerCase() === 'pis' ? 0 : 2)}</td>
+                  <td class="p-3 text-center font-mono font-black text-emerald-700">${line.value.toFixed(2)}</td>
+                </tr>`).join('')}</tbody>
+              <tfoot>
+                <tr class="bg-slate-100 border-t-2 border-slate-300 font-black">
+                  <td class="p-3 border-r border-slate-300" colspan="6">RAZEM PROTOKÓŁ</td>
+                  <td class="p-3 text-center font-mono text-emerald-700">${tech.totalValue.toFixed(2)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      `;
+
+      container.insertAdjacentHTML('beforeend', html);
+    });
+
+    container.classList.remove('hidden');
+  }
+
+  function closeZipPreview() {
+    document.getElementById('zipPreviewModal').classList.add('hidden');
+  }
+
+  function docPageStyle() {
+    return 'background:#fff;color:#111827;padding:28px 32px;border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,.25);font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;';
+  }
+
+  function buildDocTableRows(lines, includeAmount, includeValue) {
+    let rows = '';
+    lines.forEach(line => {
+      rows += `
+        <tr>
+          <td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">${line.lp}</td>
+          <td style="border:1px solid #94a3b8;padding:5px 8px;">${line.label}</td>
+          <td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">${Number(line.unitPrice || 0).toFixed(2)}</td>
+          <td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">€</td>
+          <td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">${line.unit}</td>
+          ${includeAmount ? `<td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">${Number(line.protocolAmount ?? line.amount ?? line.hours).toFixed(String(line.unit || '').toLowerCase() === 'pis' ? 0 : 2)}</td>` : ''}
+          ${includeValue ? `<td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">${line.value.toFixed(2)}</td>` : ''}
+        </tr>`;
+    });
+    return rows;
+  }
+
+  function renderZlecenieDoc(techName, tech, data) {
+    const year = (data.dateTo || '').split('-')[0] || new Date().getFullYear();
+    return `
+      <div style="${docPageStyle()}">
+        <p style="font-weight:bold;margin:0 0 4px;">ZAŁĄCZNIK NR 1 do umowy nr. ${tech.contractNumber || '.....'}</p>
+        <p style="margin:0 0 16px;color:#475569;">Rok: ${year} &nbsp;|&nbsp; Wykonawca: <b>${techName}</b> &nbsp;|&nbsp; Zakres: ${data.dateFrom} &ndash; ${data.dateTo}</p>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#e2e8f0;">
+              <th style="border:1px solid #94a3b8;padding:5px 8px;width:30px;">Lp</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;text-align:left;">Zakres usług</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">Cena jednostkowa</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">Waluta</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">Jednostka miary</th>
+            </tr>
+          </thead>
+          <tbody>${buildDocTableRows(tech.orderLines, false, false)}</tbody>
+        </table>
+        <p style="text-align:right;margin-top:48px;font-weight:bold;">WYKONAWCA</p>
+        <p style="text-align:right;color:#94a3b8;">.....................................</p>
+      </div>`;
+  }
+
+  function renderProtokolDoc(techName, tech, data) {
+    return `
+      <div style="${docPageStyle()}">
+        <p style="font-weight:bold;margin:0 0 4px;">ZAŁĄCZNIK NR 2 Protokół zdawczo-odbiorczy Usług do umowy nr. ${tech.contractNumber || '.....'}</p>
+        <p style="margin:0 0 16px;color:#475569;">Wykonawca: <b>${techName}</b> &nbsp;|&nbsp; Zakres: ${data.dateFrom} &ndash; ${data.dateTo}</p>
+        <p style="font-weight:bold;margin:0 0 8px;">Zakres Usług zgłoszony do odbioru</p>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#e2e8f0;">
+              <th style="border:1px solid #94a3b8;padding:5px 8px;width:30px;">Lp</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;text-align:left;">Zakres usług</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">CENA JEDNOSTKOWA</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">WALUTA</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">JEDNOSTKA MIARY</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">ILOŚĆ</th>
+              <th style="border:1px solid #94a3b8;padding:5px 8px;">WARTOŚĆ</th>
+            </tr>
+          </thead>
+          <tbody>${buildDocTableRows(tech.protocolLines, true, true)}</tbody>
+          <tfoot>
+            <tr style="background:#f1f5f9;font-weight:bold;">
+              <td colspan="6" style="border:1px solid #94a3b8;padding:5px 8px;text-align:right;">RAZEM</td>
+              <td style="border:1px solid #94a3b8;padding:5px 8px;text-align:center;">${tech.totalValue.toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+        <p style="margin-top:20px;">Prace wykonane z zastrzeżeniami (opis): ......................................................................</p>
+        <p style="text-align:right;margin-top:32px;font-weight:bold;">WYKONAWCA</p>
+        <p style="text-align:right;color:#94a3b8;">.....................................</p>
+      </div>`;
+  }
+
+  function openZipPreview(techName) {
+    if (!lastZipData || !lastZipData.technicians[techName]) return;
+    const tech = lastZipData.technicians[techName];
+    const pages = document.getElementById('zipPreviewPages');
+    pages.innerHTML = renderZlecenieDoc(techName, tech, lastZipData) + renderProtokolDoc(techName, tech, lastZipData);
+    document.getElementById('zipPreviewModal').classList.remove('hidden');
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const fromInput = document.getElementById('zipDateFrom');
+    const toInput = document.getElementById('zipDateTo');
+    if (!fromInput || !toInput) return;
+
+    const today = new Date();
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - today.getDay());
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+
+    const formatInputDate = date => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    fromInput.value = formatInputDate(weekStart);
+    toInput.value = formatInputDate(weekEnd);
+  });
+</script>
