@@ -1,0 +1,400 @@
+<div class="bg-white rounded-lg shadow-sm p-8 border border-gray-100 animate-fade-in">
+
+
+  <h2 class="text-2xl font-bold text-seaviaBlue mb-6 border-b pb-2">Karta Zadań</h2>
+
+
+  <form id="workReportForm" onsubmit="submitForm(event)">
+
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+
+  <!-- LEWA STRONA: KTO I KIEDY -->
+
+  <div class="space-y-6">
+
+    <!-- Przełącznik Trybu Przypisywania -->
+
+    <div class="bg-slate-50 p-4 rounded-md border border-slate-200">
+
+      <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-3">Tryb przypisywania</p>
+
+      <div class="flex space-x-6">
+
+        <label class="flex items-center space-x-2 cursor-pointer group">
+
+          <input type="radio" name="assignMode" value="tech" checked class="w-4 h-4 text-seaviaBlue focus:ring-seaviaBlue" onchange="switchAssignMode()">
+
+          <span class="text-sm font-bold text-slate-700 group-hover:text-seaviaBlue transition-colors">Pojedynczy Technik</span>
+
+        </label>
+
+        <label class="flex items-center space-x-2 cursor-pointer group">
+
+          <input type="radio" name="assignMode" value="team" class="w-4 h-4 text-seaviaBlue focus:ring-seaviaBlue" onchange="switchAssignMode()">
+
+          <span class="text-sm font-bold text-slate-700 group-hover:text-seaviaBlue transition-colors">Cały Team</span>
+
+        </label>
+
+      </div>
+
+    </div>
+
+    <div>
+
+      <label id="assignTargetLabel" class="block text-sm font-bold text-slate-700 mb-1">Wybierz technika</label>
+
+      <select id="assignTarget" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue bg-slate-50 transition-all" onchange="onTargetOrDateChange()" oninput="onTargetOrDateChange()" required>
+
+        <option value="" disabled selected>Ładowanie...</option>
+
+      </select>
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Data prac</label>
+
+      <input type="date" id="workDate" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue bg-slate-50" onchange="onTargetOrDateChange()" oninput="onTargetOrDateChange()" required>
+
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+
+      <div>
+
+        <label class="block text-sm font-bold text-slate-700 mb-1">Od godziny</label>
+
+        <input type="time" id="timeStart" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue" onchange="onTargetOrDateChange()" oninput="onTargetOrDateChange()" required>
+
+      </div>
+
+      <div>
+
+        <label class="block text-sm font-bold text-slate-700 mb-1">Do godziny</label>
+
+        <input type="time" id="timeEnd" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue" onchange="onTargetOrDateChange()" oninput="onTargetOrDateChange()" required>
+
+      </div>
+
+    </div>
+
+    <!-- Błędy w czasie -->
+
+    <div id="timeErrorMsg" class="hidden bg-red-50 text-red-600 p-3 rounded-md border border-red-200 text-sm font-bold animate-fade-in shadow-sm">
+
+      <span id="timeErrorText">Konflikt godzin!</span>
+
+    </div>
+
+    <!-- Harmonogram -->
+
+    <div id="scheduleSection" class="hidden mt-4 bg-slate-50 p-4 rounded-md border border-slate-200 shadow-inner">
+
+      <p id="scheduleTitle" class="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Dzisiejszy harmonogram</p>
+
+      <ul id="scheduleList" class="text-sm space-y-1">
+
+        <!-- Lista zadań wygenerowana przez JS -->
+
+      </ul>
+
+    </div>
+
+  </div>
+
+  <!-- PRAWA STRONA: CO ROBIŁ -->
+
+  <div class="space-y-6">
+
+    <!-- Pusty blok wyrównujący do wysokości przełącznika -->
+
+    <div class="hidden md:block h-[86px]"></div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Pokład</label>
+
+      <select id="deckSelect" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue bg-slate-50" onchange="onDeckChange()">
+
+        <option value="" disabled selected>Ładowanie...</option>
+
+      </select>
+
+      <input type="text" id="customDeckInput" placeholder="Wpisz nazwę pokładu..." oninput="onDeckChange()" class="hidden mt-2 w-full border border-slate-300 rounded-md p-2 focus:ring-2 focus:ring-seaviaBlue">
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Pomieszczenie</label>
+
+      <select id="roomSelect" class="w-full border border-slate-300 rounded-md p-2.5 bg-gray-100 opacity-60 transition-all" disabled onchange="onRoomChange()">
+
+        <option value="" disabled selected>Najpierw wybierz pokład...</option>
+
+      </select>
+
+      <input type="text" id="customRoomInput" placeholder="Wpisz numer pokoju..." class="hidden mt-2 w-full border border-slate-300 rounded-md p-2 focus:ring-2 focus:ring-seaviaBlue">
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Powierzchnia / Strefa</label>
+
+      <select id="areaSelect" class="w-full border border-slate-300 rounded-md p-2.5 bg-gray-100 opacity-60 transition-all" disabled onchange="onAreaChange()">
+
+        <option value="" disabled selected>Najpierw wybierz pokład...</option>
+
+      </select>
+
+      <input type="text" id="customAreaInput" placeholder="Wpisz nazwę strefy..." class="hidden mt-2 w-full border border-slate-300 rounded-md p-2 focus:ring-2 focus:ring-seaviaBlue">
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Zadanie</label>
+
+      <select id="taskSelect" class="w-full border border-slate-300 rounded-md p-2.5 bg-gray-100 opacity-60 transition-all" disabled onchange="onTaskChange()">
+
+        <option value="" disabled selected>Najpierw wybierz pokład...</option>
+
+      </select>
+
+      <label class="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+        <input id="extraJobCheckbox" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500">
+        <span>EXTRA JOB</span>
+      </label>
+
+      <!-- Ukryte pola do wpisywania ręcznego -->
+
+      <div id="customTaskContainer" class="hidden mt-2 space-y-2">
+
+        <input type="text" id="customTaskInput" list="taskNameSuggestions" placeholder="Wpisz nazwę zadania..." class="w-full border border-slate-300 rounded-md p-2 focus:ring-2 focus:ring-seaviaBlue">
+        <datalist id="taskNameSuggestions"></datalist>
+
+      </div>
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Typ zadania</label>
+
+      <select id="taskTypeSelect" class="w-full border border-slate-300 rounded-md p-2.5 bg-slate-50 focus:ring-2 focus:ring-seaviaBlue">
+
+        <option value="" disabled selected>Wybierz typ zadania...</option>
+
+      </select>
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">ID zadania</label>
+
+      <input type="text" id="customTaskIdInput" placeholder="ID zostanie wygenerowane automatycznie" class="w-full border border-slate-300 rounded-md p-2 focus:ring-2 focus:ring-seaviaBlue bg-slate-50 text-xs text-slate-500">
+
+    </div>
+
+    <div>
+
+      <label class="block text-sm font-bold text-slate-700 mb-1">Jednostka miary</label>
+
+      <select id="taskUnitSelect" class="w-full border border-slate-300 rounded-md p-2.5 bg-slate-50 focus:ring-2 focus:ring-seaviaBlue" onchange="toggleTaskQuantity(); resolveRoomSurface();">
+
+        <option value="" disabled selected>Wybierz jednostkę...</option>
+        <option value="m2">m2</option>
+        <option value="m">m</option>
+        <option value="h">h</option>
+        <option value="pis">pis</option>
+
+      </select>
+
+      <div id="taskQuantityContainer" class="hidden mt-2">
+        <div class="flex items-center justify-between mb-1">
+          <label id="taskQuantityLabel" class="block text-xs font-bold text-slate-500">Ile szt.</label>
+          <button type="button" id="editTaskQuantityButton" onclick="openTaskLengthEditor()" class="hidden inline-flex items-center justify-center rounded p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800" title="Edytuj zapamiętaną ilość / powierzchnię" aria-label="Edytuj zapamiętaną ilość / powierzchnię">
+            <i class="fa-solid fa-pencil"></i>
+          </button>
+        </div>
+        <input id="taskQuantityInput" type="number" min="1" step="1" inputmode="numeric" placeholder="Wpisz liczbę sztuk" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue">
+      </div>
+
+      <div id="taskLengthContainer" class="hidden mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+        <p class="text-xs font-bold text-slate-600 mb-2">Wybierz wymiar pomieszczenia lub wpisz własną długość</p>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+          <button type="button" id="dimBtnA" onclick="selectRoomDimension('A')" class="rounded-md bg-slate-700 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800">A = - m</button>
+          <button type="button" id="dimBtnB" onclick="selectRoomDimension('B')" class="rounded-md bg-slate-700 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800">B = - m</button>
+          <button type="button" id="dimBtnH" onclick="selectRoomDimension('H')" class="rounded-md bg-slate-700 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800">H = - m</button>
+          <button type="button" id="taskPerimeterButton" onclick="fillRoomPerimeter()" class="rounded-md bg-slate-700 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800">Obwód = - m</button>
+        </div>
+        <label class="block text-xs font-bold text-slate-500 mb-1">Długość pracy (m)</label>
+        <input id="taskLengthInput" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Wpisz długość pracy" class="w-full border border-slate-300 rounded-md p-2.5 focus:ring-2 focus:ring-seaviaBlue">
+      </div>
+
+    </div>
+
+    <div id="progressSection" class="hidden bg-blue-50 p-4 rounded-md border border-blue-100 mt-4 animate-fade-in shadow-sm">
+
+      <label class="block text-sm font-bold text-seaviaBlue mb-2">Zaktualizuj % wykonania zadania:</label>
+
+      <div class="flex items-center space-x-4">
+
+        <input type="range" id="progressRange" min="0" max="100" step="5" class="w-full h-2 bg-blue-200 rounded-lg appearance-none cursor-pointer accent-seaviaBlue" oninput="document.getElementById('progressValue').innerText = this.value + '%'">
+
+        <span id="progressValue" class="text-xl font-bold text-seaviaBlue w-16 text-right">0%</span>
+
+      </div>
+
+      <input type="hidden" id="taskRowNumber">
+
+    </div>
+
+  </div>
+
+</div>
+
+<div id="roomDimensionsModal" class="hidden fixed inset-0 z-[70] bg-slate-900/60 p-4 flex items-center justify-center" role="dialog" aria-modal="true">
+  <div class="w-full max-w-lg rounded-xl bg-white shadow-xl p-6">
+    <div class="flex items-center justify-between mb-5">
+      <h3 class="text-lg font-bold text-slate-800">Dodaj pomieszczenie</h3>
+      <button type="button" id="closeRoomDimensions" class="text-slate-500 hover:text-slate-800" aria-label="Zamknij"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <label class="text-sm font-bold text-slate-700">Nazwa pomieszczenia
+        <input id="newRoomName" type="text" class="mt-1 w-full border border-slate-300 rounded-md p-2.5">
+      </label>
+      <label class="text-sm font-bold text-slate-700">Numer pomieszczenia
+        <input id="newRoomNumber" type="text" class="mt-1 w-full border border-slate-300 rounded-md p-2.5">
+      </label>
+      <label class="text-sm font-bold text-slate-700">Wymiar A (m)
+        <input id="newRoomWidth" type="number" min="0" step="0.01" class="mt-1 w-full border border-slate-300 rounded-md p-2.5">
+      </label>
+      <label class="text-sm font-bold text-slate-700">Wymiar B (m)
+        <input id="newRoomLength" type="number" min="0" step="0.01" class="mt-1 w-full border border-slate-300 rounded-md p-2.5">
+      </label>
+      <label class="text-sm font-bold text-slate-700">Wysokość (m)
+        <input id="newRoomHeight" type="number" min="0" step="0.01" class="mt-1 w-full border border-slate-300 rounded-md p-2.5">
+      </label>
+    </div>
+    <div class="flex justify-end gap-3 mt-6">
+      <button type="button" id="cancelRoomDimensions" class="border border-slate-300 text-slate-700 font-bold py-2 px-4 rounded-md">Anuluj</button>
+      <button type="button" id="saveRoomDimensions" class="bg-seaviaBlue text-white font-bold py-2 px-4 rounded-md">Zapisz pomieszczenie</button>
+    </div>
+  </div>
+</div>
+
+<!-- Przycisk Zapisu -->
+
+<div class="mt-10 border-t border-slate-200 pt-6 flex justify-end">
+
+  <button type="submit" id="submitBtn" class="bg-seaviaBlue hover:bg-[#0a1e38] text-white font-bold py-3 px-8 rounded-md shadow-md transition-all flex items-center text-lg">
+
+    <span>Zapisz i prześlij</span>
+
+    <i class="fa-solid fa-paper-plane ml-3"></i>
+
+  </button>
+
+</div>
+
+
+  </form>
+
+
+</div>
+
+
+<!-- SKRYPT FILTRUJĄCY WYŁĄCZNIE AKTYWNYCH TECHNIKÓW -->
+
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const targetSelect = document.getElementById('assignTarget');
+  const workDate = document.getElementById('workDate');
+  const timeStart = document.getElementById('timeStart');
+  const timeEnd = document.getElementById('timeEnd');
+
+  if (targetSelect) {
+    const observer = new MutationObserver(() => {
+      observer.disconnect();
+      filterActiveTechnicians();
+      observer.observe(targetSelect, { childList: true });
+    });
+    observer.observe(targetSelect, { childList: true });
+    filterActiveTechnicians();
+  }
+
+  [workDate, timeStart, timeEnd, targetSelect].forEach(el => {
+    if (!el) return;
+    ['input', 'change'].forEach(eventName => {
+      el.addEventListener(eventName, () => {
+        if (typeof onTargetOrDateChange === 'function') {
+          onTargetOrDateChange();
+        }
+      });
+    });
+  });
+
+  const modeInputs = document.querySelectorAll('input[name="assignMode"]');
+  modeInputs.forEach(input => {
+    input.addEventListener('change', () => {
+      if (typeof switchAssignMode === 'function') switchAssignMode();
+      setTimeout(filterActiveTechnicians, 50);
+    });
+  });
+});
+
+function filterActiveTechnicians() {
+  const targetSelect = document.getElementById('assignTarget');
+  if (!targetSelect) return;
+
+  const assignModeInput = document.querySelector('input[name="assignMode"]:checked');
+  const isTechMode = assignModeInput ? assignModeInput.value === 'tech' : true;
+
+  // Filtrujemy tylko w trybie Pojedynczego Technika
+  if (!isTechMode) return;
+
+  const applyFilter = (techsDetails) => {
+    const activeTechNames = (techsDetails || [])
+      .filter(t => {
+        const status = String(t.status || '').trim().toLowerCase();
+        const normalized = status.replace(/[^a-z]/g, '');
+        if (!normalized) return false;
+
+        const inactiveValues = ['nieaktywny', 'inactive', 'offline', 'off', 'disabled', 'nieaktywna'];
+        const activeValues = ['aktywny', 'active', 'aktywna', 'working', 'online', 'wpracy', 'pracuje'];
+
+        if (inactiveValues.some(v => normalized.includes(v.replace(/[^a-z]/g, '')))) return false;
+        return activeValues.some(v => normalized === v || normalized.includes(v));
+      })
+      .map(t => String(t.name).toLowerCase());
+
+    Array.from(targetSelect.options).forEach(opt => {
+      if (opt.value && !activeTechNames.includes(String(opt.value).toLowerCase()) && opt.value !== "") {
+        opt.remove();
+      }
+    });
+  };
+
+  const sourceData = window.appData || window.initialData;
+
+  if (sourceData && sourceData.techniciansDetails) {
+    applyFilter(sourceData.techniciansDetails);
+    return;
+  }
+
+  if (typeof google !== 'undefined' && google.script && google.script.run) {
+    google.script.run.withSuccessHandler(data => {
+      if (data && data.techniciansDetails) {
+        applyFilter(data.techniciansDetails);
+      }
+    }).getInitialData();
+  }
+}
+</script>
