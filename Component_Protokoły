@@ -1,0 +1,127 @@
+<div class="bg-white rounded-lg shadow-sm p-4 md:p-8 border border-gray-100 animate-fade-in">
+ <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4 gap-4">
+ <div>
+ <h2 class="text-2xl font-bold text-seaviaBlue"><i class="fa-solid fa-file-signature mr-2 text-candidoRed"></i> Zlecenia i Protokoły</h2>
+ <p class="text-sm text-slate-500 mt-1">Moduł rozliczający ilości wykonanych prac proporcjonalnie do przepracowanych godzin na zadaniu.</p>
+ </div>
+ <button onclick="loadProtocols()" id="btnLoadProtocols" class="w-full md:w-auto bg-seaviaBlue hover:bg-[#0a1e38] text-white font-bold py-2.5 px-6 rounded shadow-sm transition-all flex items-center justify-center text-sm">
+ <i class="fa-solid fa-calculator mr-2"></i> Przelicz bazę i generuj
+ </button>
+ </div>
+
+ <!-- Miejsce na informacje o pustej bazie lub ładowaniu -->
+ <div id="protocolsEmptyState" class="bg-slate-50 p-10 rounded-lg border border-slate-200 text-center text-slate-500">
+ <i class="fa-solid fa-scale-balanced text-4xl mb-4 text-slate-300 block"></i>
+ <p class="font-medium text-lg mb-2">Brak załadowanych protokołów</p>
+ <p class="text-sm">Kliknij "Przelicz bazę i generuj", aby system proporcjonalnie rozbił metraż na przepracowane godziny techników z arkusza kalkulacyjnego.</p>
+ </div>
+
+ <!-- Kontener na wygenerowane zlecenia pogrupowane per technik -->
+ <div id="protocolsContainer" class="hidden flex flex-col gap-8">
+ <!-- Wstrzykiwane dynamicznie przez JS -->
+ </div>
+</div>
+
+<script>
+ function loadProtocols() {
+ const btn = document.getElementById('btnLoadProtocols');
+ const container = document.getElementById('protocolsContainer');
+ const emptyState = document.getElementById('protocolsEmptyState');
+ 
+ btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Obliczanie udziałów...';
+ btn.disabled = true;
+
+ google.script.run
+ .withSuccessHandler(data => {
+ renderProtocols(data);
+ btn.innerHTML = '<i class="fa-solid fa-calculator mr-2"></i> Przelicz bazę i generuj';
+ btn.disabled = false;
+ })
+ .withFailureHandler(err => {
+ alert("Błąd wyliczania protokołów: " + err);
+ btn.innerHTML = '<i class="fa-solid fa-calculator mr-2"></i> Przelicz bazę i generuj';
+ btn.disabled = false;
+ })
+ .generateProtocolsData();
+ }
+
+ function renderProtocols(data) {
+ const container = document.getElementById('protocolsContainer');
+ const emptyState = document.getElementById('protocolsEmptyState');
+ 
+ if (!data || Object.keys(data).length === 0) {
+ container.classList.add('hidden');
+ emptyState.innerHTML = '<i class="fa-regular fa-folder-open text-4xl mb-4 text-slate-300 block"></i><p class="font-medium">Brak danych.</p><p class="text-sm">Nie ma żadnych postępów zadań posiadających zadeklarowany metraż oraz roboczogodziny.</p>';
+ emptyState.classList.remove('hidden');
+ return;
+ }
+
+ emptyState.classList.add('hidden');
+ container.innerHTML = '';
+
+ Object.keys(data).forEach(techName => {
+ const techTasks = data[techName];
+ 
+ let html = `
+ <div class="bg-white border border-slate-300 rounded-lg shadow-sm overflow-hidden protocol-card">
+ <div class="bg-slate-100 p-4 border-b border-slate-300 flex justify-between items-center">
+ <div>
+ <h3 class="font-black text-seaviaBlue text-base uppercase tracking-wider">${techName}</h3>
+ <p class="text-[11px] text-slate-500 font-bold uppercase mt-1 tracking-widest">Wykaz udziałów w zadaniach (Proporcja czasowa)</p>
+ </div>
+ </div>
+ <div class="overflow-x-auto">
+ <table class="w-full text-left border-collapse text-xs">
+ <thead>
+ <tr class="bg-slate-50 text-slate-600 border-b border-slate-300">
+ <th class="p-3 border-r border-slate-300 w-1/4">Pokład / Pokój</th>
+ <th class="p-3 border-r border-slate-300 w-1/3">Nazwa Zadania</th>
+ <th class="p-3 border-r border-slate-300 text-center bg-blue-50/50" title="Czas tego technika / Czas całej ekipy na to zadanie">Godziny (Tech / All)</th>
+ <th class="p-3 border-r border-slate-300 text-center bg-amber-50/50">Postęp Zadania</th>
+ <th class="p-3 text-center bg-emerald-50">Zaliczone do protokołu</th>
+ </tr>
+ </thead>
+ <tbody>
+ `;
+
+ techTasks.forEach(t => {
+ // Wizualizacja pokoju
+ const roomText = t.room ? `<br><span class="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-600 mt-1 inline-block"><i class="fa-solid fa-door-open mr-1"></i>${t.room}</span>` : '';
+ 
+ html += `
+ <tr class="border-b border-slate-200 hover:bg-slate-50 transition-colors">
+ <td class="p-3 border-r border-slate-300 font-bold text-slate-700">
+ ${t.deck}
+ ${roomText}
+ </td>
+ <td class="p-3 border-r border-slate-300 font-medium text-slate-800">
+ ${t.taskName}
+ </td>
+ <td class="p-3 border-r border-slate-300 text-center font-mono">
+ <span class="text-seaviaBlue font-bold">${t.techHours.toFixed(1)}h</span> 
+ <span class="text-slate-400 mx-1">/</span> 
+ <span class="text-slate-500">${t.totalTaskHours.toFixed(1)}h</span>
+ </td>
+ <td class="p-3 border-r border-slate-300 text-center">
+ <span class="font-bold text-amber-600">${t.progress}%</span>
+ <p class="text-[10px] text-slate-400 mt-0.5">(z ${t.totalAmount} ${t.unit})</p>
+ </td>
+ <td class="p-3 text-center bg-emerald-50/30">
+ <span class="font-black text-emerald-700 text-base block">${t.techShareAmount.toFixed(2)} ${t.unit}</span>
+ </td>
+ </tr>
+ `;
+ });
+
+ html += `
+ </tbody>
+ </table>
+ </div>
+ </div>
+ `;
+ container.innerHTML += html;
+ });
+
+ container.classList.remove('hidden');
+ }
+</script>
