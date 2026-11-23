@@ -1,0 +1,101 @@
+/**
+ * NIEZALEŻNY SKRYPT DO AKTUALIZACJI POWIERZCHNI W LIŚCIE ZADAŃ
+ * Możesz go wkleić jako nowy plik w edytorze Apps Script.
+ */
+
+// Dodaje niestandardowe menu na górnym pasku arkusza Google
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('🛠️ Narzędzia Foreman')
+    .addItem('Zaktualizuj Powierzchnie', 'zaktualizujPowierzchnie')
+    .addToUi();
+}
+
+function zaktualizujPowierzchnie() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetZadan = ss.getSheetByName("Lista zadań");
+  const sheetPom = ss.getSheetByName("Pomieszczenia");
+
+  if (!sheetZadan || !sheetPom) {
+    SpreadsheetApp.getUi().alert("Błąd", "Nie znaleziono zakładki 'Lista zadań' lub 'Pomieszczenia'.", SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // --- KONFIGURACJA KOLUMN ---
+  // Ułatwia ewentualną zmianę, jeśli w przyszłości przesuniesz kolumny.
+  // Pamiętaj: w tablicach indeksujemy od 0 (czyli Kolumna A = 0, B = 1, C = 2 itd.)
+  
+  // Zakładka "Pomieszczenia"
+  const POM_ROOM_IDX = 2;   // Kolumna C (ID Pokoju)
+  const POM_PODLOGA_IDX = 7; // Kolumna H (Podłoga)
+  const POM_SUFIT_IDX = 8;   // Kolumna I (Sufit)
+  const POM_SCIANY_IDX = 9;  // Kolumna J (Ściany)
+
+  // Zakładka "Lista zadań"
+  const ZAD_STREFA_IDX = 3;  // Kolumna D (Strefa) - tu gdzie możesz mieć wpisane np. ściany/podłogi
+  const ZAD_ROOM_IDX = 4;    // Kolumna E (Numer pokoju)
+  const ZAD_NAZWA_IDX = 9;   // Kolumna J (Nazwa zadania)
+  const ZAD_WYNIK_KOLUMNA = 18; // Kolumna R (18 litera alfabetu) - TU WPLEJAMY WYNIKI
+
+  // 1. ZBUDOWANIE SŁOWNIKA Z ZAKŁADKI POMIESZCZENIA
+  const pomData = sheetPom.getDataRange().getValues();
+  const roomMap = {};
+  
+  // Zaczynamy od wiersza 3 (indeks 2), pomijając nagłówki
+  for (let i = 2; i < pomData.length; i++) {
+    let roomId = String(pomData[i][POM_ROOM_IDX]).trim();
+    if (roomId) {
+      roomMap[roomId] = {
+        podloga: pomData[i][POM_PODLOGA_IDX],
+        sufit: pomData[i][POM_SUFIT_IDX],
+        sciany: pomData[i][POM_SCIANY_IDX]
+      };
+    }
+  }
+
+  // 2. PRZETWORZENIE LISTY ZADAŃ I DOPASOWANIE WARTOŚCI
+  const zadanData = sheetZadan.getDataRange().getValues();
+  const lastRow = zadanData.length;
+  
+  if (lastRow < 3) {
+    SpreadsheetApp.getUi().alert("Brak danych w Liście zadań.");
+    return;
+  }
+
+  // Tablica, która przechowa nowe wartości dla całej kolumny R (Powierzchnia)
+  const nowePowierzchnie = [];
+
+  for (let i = 2; i < lastRow; i++) {
+    let room = String(zadanData[i][ZAD_ROOM_IDX]).trim();
+    // Pobieramy stary wynik z kolumny R (żeby go nie skasować, jeśli nie znajdziemy dopasowania)
+    let staraWartosc = zadanData[i][ZAD_WYNIK_KOLUMNA - 1]; 
+    let nowaWartosc = staraWartosc;
+
+    if (room && roomMap[room]) {
+      // Pobieramy teksty ze Strefy (Kolumna D) oraz Zadania (Kolumna J), łączymy je i zamieniamy na małe litery
+      // To daje nam 100% pewności, że skrypt złapie słowo kluczowe obojętnie gdzie je wpiszesz.
+      let tekstDoSprawdzenia = (String(zadanData[i][ZAD_STREFA_IDX]) + " " + String(zadanData[i][ZAD_NAZWA_IDX])).toLowerCase();
+
+      // Rozpoznajemy strefę/zadanie
+      if (tekstDoSprawdzenia.includes("podłog") || tekstDoSprawdzenia.includes("wylewk") || tekstDoSprawdzenia.includes("wykładzin") || tekstDoSprawdzenia.includes("szlifow")) {
+        nowaWartosc = roomMap[room].podloga;
+      } 
+      else if (tekstDoSprawdzenia.includes("ścian") || tekstDoSprawdzenia.includes("scian") || tekstDoSprawdzenia.includes("malowani") || tekstDoSprawdzenia.includes("tapet")) {
+        nowaWartosc = roomMap[room].sciany;
+      } 
+      else if (tekstDoSprawdzenia.includes("sufit")) {
+        nowaWartosc = roomMap[room].sufit;
+      }
+    }
+    
+    // Dodajemy wynik do naszej wirtualnej kolumny
+    nowePowierzchnie.push([nowaWartosc]);
+  }
+
+  // 3. MASOWE WKLEJENIE WYNIKÓW (Bardzo wydajne)
+  if (nowePowierzchnie.length > 0) {
+    sheetZadan.getRange(3, ZAD_WYNIK_KOLUMNA, nowePowierzchnie.length, 1).setValues(nowePowierzchnie);
+  }
+
+  SpreadsheetApp.getUi().alert("✅ Sukces", "Powierzchnie w kolumnie R zostały pomyślnie zaktualizowane!", SpreadsheetApp.getUi().ButtonSet.OK);
+}
