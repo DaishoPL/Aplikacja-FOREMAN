@@ -1,0 +1,860 @@
+<!-- Wczytanie biblioteki Chart.js - BEZ NIEJ WYKRESY NIE BĘDĄ DZIAŁAĆ -->
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+ // Globalne zmienne do przechowywania instancji wykresów
+ let mainChartInstance = null;
+ let deckChartInstances = {};
+ let dashboardData = null;
+
+ // Stan aktywności poszczególnych wycinków dla wykresów wielowarstwowych
+ let mainChartActiveState = { decks: {}, areas: {} };
+ let extraChartActiveState = { decks: {}, areas: {} };
+
+ // Kopie zapasowe oryginalnych danych dla wykresów wielowarstwowych
+ let mainChartOriginalData = { deckLabels: [], deckValues: [], areaLabels: [], areaValues: [] };
+ let extraChartOriginalData = { deckLabels: [], deckValues: [], areaLabels: [], areaValues: [] };
+
+ function normalizeDeckName(value) {
+   const raw = String(value ?? '').trim();
+   if (!raw) return '';
+   const compact = raw.toUpperCase().replace(/[_\-\s]+/g, '');
+   const match = compact.match(/^DK(\d+)$/i);
+   if (match) return 'DK' + match[1];
+   return raw.toUpperCase();
+ }
+
+ // Paleta kolorów spójna z identyfikacją wizualną Seavia
+ const CHART_COLORS = [
+ '#0f3460', '#e94560', '#16a34a', '#f59e0b', '#8b5cf6',
+ '#06b6d4', '#ec4899', '#14b8a6', '#f43f5e', '#10b981'
+ ];
+
+ /**
+ * Pomocnicze generowanie palety kolorów
+ */
+ function getColors(count) {
+ const colors = [];
+ for (let i = 0; i < count; i++) {
+ colors.push(CHART_COLORS[i % CHART_COLORS.length]);
+ }
+ return colors;
+ }
+
+ /**
+ * Obsługa kliknięcia w legendę dla standardowych wykresów jednopoziomowych
+ */
+ const legendClickHandler = function(e, legendItem, legend) {
+ const index = legendItem.index;
+ const ci = legend.chart;
+
+ // Przełącz widoczność wybranego wycinka
+ ci.toggleDataVisibility(index);
+ ci.update();
+
+ // Przelicz sumę godzin tylko dla widocznych wycinków
+ let visibleSum = 0;
+ const dataset = ci.data.datasets[0];
+ dataset.data.forEach((val, i) => {
+ if (ci.getDataVisibility(i)) {
+ visibleSum += val;
+ }
+ });
+
+ // Bezpieczne pobranie ID i aktualizacja sumy na środku wykresu
+ if (ci.options.plugins && ci.options.plugins.customCenterHoursId) {
+ const centerId = ci.options.plugins.customCenterHoursId;
+ const centerEl = document.getElementById(centerId);
+ if (centerEl) {
+ centerEl.innerText = visibleSum.toFixed(1) + 'h';
+ }
+ }
+ };
+
+ /**
+ * Obsługa interaktywnego kliknięcia w legendę HTML dla Głównego Wykresu (Przeliczanie części wspólnej)
+ */
+ function handleMainLegendClick(type, label, element) {
+ const state = mainChartActiveState[type === 'deck' ? 'decks' : 'areas'];
+ state[label] = !state[label];
+
+ // Zmiana stylizacji elementu legendy (poszarzenie po wyłączeniu)
+ if (state[label]) {
+ element.classList.remove('opacity-40', 'line-through');
+ } else {
+ element.classList.add('opacity-40', 'line-through');
+ }
+
+ updateMainChart();
+ }
+
+ /**
+ * Funkcja aktualizująca i przeliczająca wykres główny na podstawie aktywnych filtrów (część wspólna)
+ */
+ function updateMainChart() {
+ if (!dashboardData || !dashboardData.spisHours) return;
+
+ // Przeliczenie sum dla każdego pokładu uwzględniając tylko aktywne obszary
+ const deckSums = {};
+ mainChartOriginalData.deckLabels.forEach(d => {
+ deckSums[d] = 0;
+ });
+
+ // Przeliczenie sum dla każdego obszaru uwzględniając tylko aktywne pokłady
+ const areaSums = {};
+ mainChartOriginalData.areaLabels.forEach(a => {
+ areaSums[a] = 0;
+ });
+
+ let totalHours = 0;
+
+ dashboardData.spisHours.forEach(item => {
+ const deckKey = normalizeDeckName(item.deck);
+ const areaKey = String(item.area || '').trim();
+ const isDeckActive = mainChartActiveState.decks[deckKey];
+ const isAreaActive = mainChartActiveState.areas[areaKey];
+
+ // Sumujemy tylko te wpisy, których zarówno pokład jak i obszar są aktywne
+ if (isDeckActive && isAreaActive) {
+ deckSums[deckKey] = (deckSums[deckKey] || 0) + item.hours;
+ areaSums[areaKey] = (areaSums[areaKey] || 0) + item.hours;
+ totalHours += item.hours;
+ }
+ });
+
+ // Przygotowanie przefiltrowanych wartości dla datasetów
+ const updatedDeckValues = mainChartOriginalData.deckLabels.map(l =>
+ mainChartActiveState.decks[l] ? (Math.round(deckSums[l] * 10) / 10) : 0
+ );
+
+ const updatedAreaValues = mainChartOriginalData.areaLabels.map(l =>
+ mainChartActiveState.areas[l] ? (Math.round(areaSums[l] * 10) / 10) : 0
+ );
+
+ // Aktualizacja wykresu
+ mainChartInstance.data.datasets[1].data = updatedDeckValues;
+ mainChartInstance.data.datasets[0].data = updatedAreaValues;
+ mainChartInstance.update();
+
+ // Aktualizacja licznika godzin na środku wykresu
+ const centerEl = document.getElementById('centerChartHours_main');
+ if (centerEl) {
+ centerEl.innerText = totalHours.toFixed(1) + 'h';
+ }
+ }
+
+ /**
+ * Obsługa interaktywnego kliknięcia w legendę HTML dla wykresu EXTRA JOB (Przeliczanie części wspólnej)
+ */
+ function handleExtraLegendClick(type, label, element) {
+ const state = extraChartActiveState[type === 'deck' ? 'decks' : 'areas'];
+ state[label] = !state[label];
+
+ if (state[label]) {
+ element.classList.remove('opacity-40', 'line-through');
+ } else {
+ element.classList.add('opacity-40', 'line-through');
+ }
+
+ updateExtraChart();
+ }
+
+ /**
+ * Funkcja aktualizująca i przeliczająca wykres EXTRA JOB na podstawie aktywnych filtrów (część wspólna)
+ */
+ function updateExtraChart() {
+ const extraChart = deckChartInstances['EXTRA JOB'];
+ if (!extraChart || !dashboardData || !dashboardData.spisHours) return;
+
+ let extraItems = dashboardData.spisHours.filter(item =>
+ item.idPrac && item.idPrac.toUpperCase().includes('- EXTRA JOB')
+ );
+
+ const deckSums = {};
+ extraChartOriginalData.deckLabels.forEach(d => {
+ deckSums[d] = 0;
+ });
+
+ const areaSums = {};
+ extraChartOriginalData.areaLabels.forEach(a => {
+ areaSums[a] = 0;
+ });
+
+ let totalHours = 0;
+
+ extraItems.forEach(item => {
+ const deckKey = normalizeDeckName(item.deck);
+ const areaKey = String(item.area || '').trim();
+ const isDeckActive = extraChartActiveState.decks[deckKey];
+ const isAreaActive = extraChartActiveState.areas[areaKey];
+
+ if (isDeckActive && isAreaActive) {
+ deckSums[deckKey] = (deckSums[deckKey] || 0) + item.hours;
+ areaSums[areaKey] = (areaSums[areaKey] || 0) + item.hours;
+ totalHours += item.hours;
+ }
+ });
+
+ const updatedDeckValues = extraChartOriginalData.deckLabels.map(l =>
+ extraChartActiveState.decks[l] ? (Math.round(deckSums[l] * 10) / 10) : 0
+ );
+
+ const updatedAreaValues = extraChartOriginalData.areaLabels.map(l =>
+ extraChartActiveState.areas[l] ? (Math.round(areaSums[l] * 10) / 10) : 0
+ );
+
+ extraChart.data.datasets[1].data = updatedDeckValues;
+ extraChart.data.datasets[0].data = updatedAreaValues;
+ extraChart.update();
+
+ const centerEl = document.getElementById('centerChartHours_extra');
+ if (centerEl) {
+ centerEl.innerText = totalHours.toFixed(1) + 'h';
+ }
+ }
+
+ document.addEventListener("DOMContentLoaded", () => {
+ loadDashboardData();
+ });
+
+ /**
+ * Pobieranie danych z backendu Apps Script
+ */
+ function loadDashboardData() {
+ const centerHours = document.getElementById('centerChartHours_main');
+ if (centerHours) centerHours.innerText = 'Pobieranie...';
+
+ google.script.run
+ .withSuccessHandler(data => {
+ dashboardData = data;
+ updateDashboardKPIs(data);
+ restructureMainChartDOM();
+ renderMainProjectChart();
+ renderDeckCharts();
+ })
+ .withFailureHandler(err => {
+ console.error("Błąd pobierania danych realizacyjnych:", err);
+ alert("Błąd podczas ładowania danych: " + err);
+ })
+ .getInitialData();
+ }
+
+ /**
+ * Statystyki i górne kafle KPI (ŚREDNIA WAŻONA WAGAMI POWIERZCHNI/ILOŚCI)
+ */
+ function updateDashboardKPIs(data) {
+ const progressEl = document.getElementById('dashTotalProgress');
+ if (progressEl) {
+ let totalCompletedAmount = 0;
+ let totalTargetAmount = 0;
+ let unweightedProgressSum = 0;
+ let taskCount = 0;
+
+ if (data.tasksTree) {
+ Object.keys(data.tasksTree).forEach(deck => {
+ Object.keys(data.tasksTree[deck]).forEach(area => {
+ data.tasksTree[deck][area].forEach(task => {
+ // Jeśli zadanie nie ma podanej powierzchni, dajemy mu domyślną wagę 1, 
+ // aby nie ignorować go całkowicie w obliczeniach postępu.
+ let weight = task.amount > 0 ? task.amount : 1; 
+ 
+ totalTargetAmount += weight;
+ totalCompletedAmount += (weight * ((task.progress || 0) / 100));
+
+ unweightedProgressSum += (task.progress || 0);
+ taskCount++;
+ });
+ });
+ });
+ }
+ 
+ // Obliczanie średniej ważonej powierzchnią
+ let avgProgress = 0;
+ if (totalTargetAmount > 0) {
+ avgProgress = (totalCompletedAmount / totalTargetAmount) * 100;
+ } else if (taskCount > 0) {
+ avgProgress = unweightedProgressSum / taskCount; // Fallback do zwykłej średniej, gdy brakuje metrażu we wszystkich zadaniach
+ }
+
+ progressEl.innerText = avgProgress.toFixed(1) + '%';
+ }
+
+ const hoursEl = document.getElementById('dashTotalHours');
+ if (hoursEl) {
+ const hoursVal = data.totalWorkedHours || 0;
+ hoursEl.innerText = hoursVal.toFixed(1) + 'h';
+ }
+
+ if (data.techStats) {
+ const activeEl = document.getElementById('dashActiveTechs');
+ const totalEl = document.getElementById('dashTotalTechs');
+ if (activeEl) activeEl.innerText = data.techStats.active || 0;
+ if (totalEl) totalEl.innerText = data.techStats.total || 0;
+ }
+ }
+
+ /**
+ * Dynamiczne przebudowanie DOM dla Głównego Wykresu (Wprowadzenie układu z dwoma kolumnami legendy)
+ */
+ function restructureMainChartDOM() {
+ const canvas = document.getElementById('mainProjectChart');
+ if (!canvas) return;
+
+ if (document.getElementById('main_deck_legend')) return; // DOM już przebudowany
+
+ const parent = canvas.parentElement;
+
+ // Usuwamy duplikujący się zewnętrzny tytuł "Postęp Główny (Z podziałem na Pokłady)" znajdujący się bezpośrednio nad kontenerem
+ const prevEl = parent.previousElementSibling;
+ if (prevEl && prevEl.textContent.includes("Postęp Główny")) {
+ prevEl.remove();
+ }
+
+ parent.className = "w-full bg-white border border-slate-200 rounded-lg shadow-sm p-4 md:p-8 mb-6";
+ parent.innerHTML = `
+ <h3 class="font-black text-seaviaBlue text-base uppercase tracking-wider mb-6 text-center">WYKRES CZASU PRACY NA PROJEKCIE</h3>
+ <div class="flex flex-col md:flex-row items-center justify-between gap-6 w-full">
+ <!-- Lewa kolumna: Legenda Pokładów (Rozłożona na 2 kolumny) -->
+ <div class="w-full md:w-[35%] grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs font-semibold text-slate-700 max-h-64 overflow-y-auto pr-1" id="main_deck_legend">
+ </div>
+ <!-- Środkowa kolumna: Dwupoziomowy wykres kołowy -->
+ <div class="relative w-full md:w-[40%] h-64 flex items-center justify-center">
+ <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-2">
+ <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Godziny</span>
+ <span id="centerChartHours_main" class="text-2xl font-black text-seaviaBlue">0.0h</span>
+ </div>
+ <canvas id="mainProjectChart"></canvas>
+ </div>
+ <!-- Prawa kolumna: Legenda Obszarów (1 kolumna) -->
+ <div class="w-full md:w-[25%] flex flex-col gap-1.5 text-xs font-semibold text-slate-700 max-h-64 overflow-y-auto pr-1" id="main_area_legend">
+ </div>
+ </div>
+ `;
+
+ // Ukrywamy/usuwamy stare przyciski przełączania widoków
+ const switcherGroup = document.getElementById('btnGroupDeck')?.parentElement;
+ if (switcherGroup) {
+ switcherGroup.remove();
+ }
+ }
+
+ /**
+ * Renderowanie Głównego Wykresu Pierścieniowego (Nested Doughnut: Pokłady wewnątrz, Obszary na zewnątrz)
+ */
+ function renderMainProjectChart() {
+ if (!dashboardData || !dashboardData.spisHours) return;
+ const canvas = document.getElementById('mainProjectChart');
+ if (!canvas) return;
+
+ const ctx = canvas.getContext('2d');
+ if (mainChartInstance) {
+ mainChartInstance.destroy();
+ }
+
+ let deckData = {};
+ let areaData = {};
+ let totalHours = 0;
+
+ dashboardData.spisHours.forEach(item => {
+ const hours = item.hours || 0;
+ if (hours > 0) {
+ const deckKey = normalizeDeckName(item.deck);
+ const areaKey = String(item.area || '').trim();
+ deckData[deckKey] = (deckData[deckKey] || 0) + hours;
+ areaData[areaKey] = (areaData[areaKey] || 0) + hours;
+ totalHours += hours;
+ }
+ });
+
+ const deckLabels = Object.keys(deckData);
+ const deckValues = Object.values(deckData).map(v => Math.round(v * 10) / 10);
+ const deckColors = getColors(deckLabels.length);
+
+ const areaLabels = Object.keys(areaData);
+ const areaValues = Object.values(areaData).map(v => Math.round(v * 10) / 10);
+ const areaColors = getColors(areaLabels.length).reverse();
+
+ // Zachowaj oryginalne dane do obsługi interaktywnej legendy
+ mainChartOriginalData = { deckLabels, deckValues, areaLabels, areaValues };
+
+ deckLabels.forEach(l => mainChartActiveState.decks[l] = true);
+ areaLabels.forEach(l => mainChartActiveState.areas[l] = true);
+
+ // Renderowanie legendy HTML - Pokłady (Lewa strona - 2 kolumny)
+ let deckLegendHtml = `<span class="col-span-2 text-[10px] text-slate-400 uppercase font-black tracking-wider border-b pb-1 mb-1">Pokłady</span>`;
+ deckLabels.forEach((label, i) => {
+ const color = deckColors[i];
+ deckLegendHtml += `
+ <div class="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-slate-100 cursor-pointer transition-all truncate" onclick="handleMainLegendClick('deck', '${label}', this)">
+ <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: ${color}"></span>
+ <span class="truncate font-medium" title="${label}">${label}</span>
+ </div>
+ `;
+ });
+ document.getElementById('main_deck_legend').innerHTML = deckLegendHtml;
+
+ // Renderowanie legendy HTML - Obszary (Prawa strona - 1 kolumna)
+ let areaLegendHtml = `<span class="text-[10px] text-slate-400 uppercase font-black tracking-wider border-b pb-1 mb-1">Obszary</span>`;
+ areaLabels.forEach((label, i) => {
+ const color = areaColors[i];
+ areaLegendHtml += `
+ <div class="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-slate-100 cursor-pointer transition-all truncate" onclick="handleMainLegendClick('area', '${label}', this)">
+ <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: ${color}"></span>
+ <span class="truncate font-medium" title="${label}">${label}</span>
+ </div>
+ `;
+ });
+ document.getElementById('main_area_legend').innerHTML = areaLegendHtml;
+
+ const centerHoursEl = document.getElementById('centerChartHours_main');
+ if (centerHoursEl) {
+ centerHoursEl.innerText = totalHours.toFixed(1) + 'h';
+ }
+
+ mainChartInstance = new Chart(ctx, {
+ type: 'doughnut',
+ data: {
+ datasets: [
+ {
+ label: 'Obszary (Zewnętrzny)',
+ data: areaValues,
+ backgroundColor: areaColors,
+ borderWidth: 1.5,
+ hoverOffset: 4
+ },
+ {
+ label: 'Pokłady (Wewnętrzny)',
+ data: deckValues,
+ backgroundColor: deckColors,
+ borderWidth: 1.5,
+ hoverOffset: 4
+ }
+ ]
+ },
+ options: {
+ responsive: true,
+ maintainAspectRatio: false,
+ cutout: '50%',
+ plugins: {
+ legend: {
+ display: false // Wyłączamy standardową legendę
+ },
+ tooltip: {
+ callbacks: {
+ label: function(context) {
+ const datasetIndex = context.datasetIndex; // 0 = Obszary, 1 = Pokłady
+ const index = context.dataIndex;
+ const label = datasetIndex === 0 ? areaLabels[index] : deckLabels[index];
+ const val = context.raw;
+ return `${context.dataset.label.split(' ')[0]} - ${label}: ${val.toFixed(1)}h`;
+ }
+ }
+ }
+ }
+ }
+ });
+ }
+
+ /**
+ * Renderowanie Wykresów Szczegółowych dla Pokładów (w tym EXTRA JOB jako duży wykres na dole, BREAK, TRAVEL)
+ */
+ function renderDeckCharts() {
+ const container = document.getElementById('deckChartsContainer');
+ if (!container || !dashboardData || !dashboardData.spisHours) return;
+
+ // Czyszczenie poprzednich wykresów
+ container.innerHTML = '';
+ Object.keys(deckChartInstances).forEach(key => {
+ if (deckChartInstances[key]) deckChartInstances[key].destroy();
+ });
+ deckChartInstances = {};
+
+ // 1. Grupowanie standardowych pokładów
+ let deckHours = {};
+ dashboardData.spisHours.forEach(item => {
+ let dUpper = normalizeDeckName(item.deck);
+ if (dUpper !== 'TRAVEL' && dUpper !== 'BREAK') {
+ if (!deckHours[dUpper]) {
+ deckHours[dUpper] = {};
+ }
+ const areaKey = String(item.area || '').trim();
+ deckHours[dUpper][areaKey] = (deckHours[dUpper][areaKey] || 0) + item.hours;
+ }
+ });
+
+ // 2. Wyliczanie sum godzin dla TRAVEL i BREAK
+ let travelHours = 0;
+ let breakHours = 0;
+ dashboardData.spisHours.forEach(item => {
+ let dUpper = normalizeDeckName(item.deck);
+ if (dUpper === 'TRAVEL') {
+ travelHours += item.hours;
+ } else if (dUpper === 'BREAK') {
+ breakHours += item.hours;
+ }
+ });
+
+ // 3. Określamy standardowe pokłady i sortujemy je
+ let standardDecks = Object.keys(deckHours).sort((a, b) => {
+ let numA = parseInt(String(a).match(/\d+/)?.[0] || '0', 10);
+ let numB = parseInt(String(b).match(/\d+/)?.[0] || '0', 10);
+ if (numA !== numB) return numA - numB;
+ return a.localeCompare(b);
+ });
+
+ let decksToRenderInGrid = [...standardDecks];
+ if (breakHours > 0) decksToRenderInGrid.push('BREAK');
+ if (travelHours > 0) decksToRenderInGrid.push('TRAVEL');
+
+ // 4. Renderowanie standardowych pokładów w siatce (Grid)
+ decksToRenderInGrid.forEach((deckName) => {
+ const cardId = `deckCard_${deckName.replace(/\s+/g, '_')}`;
+ const canvasId = `chart_${deckName.replace(/\s+/g, '_')}`;
+ const centerHoursId = `hours_${deckName.replace(/\s+/g, '_')}`;
+ let progressPill = '';
+
+ if (deckName === 'TRAVEL') {
+ progressPill = `<span class="text-[10px] bg-blue-100 text-blue-700 font-bold px-2 py-1 rounded">Travel</span>`;
+ } else if (deckName === 'BREAK') {
+ progressPill = `<span class="text-[10px] bg-red-100 text-red-700 font-bold px-2 py-1 rounded">Break</span>`;
+ } else {
+ let deckCompletedAmount = 0;
+ let deckTargetAmount = 0;
+ let deckTaskCount = 0;
+ let deckUnweightedSum = 0;
+
+ if (dashboardData.tasksTree && dashboardData.tasksTree[deckName]) {
+ Object.keys(dashboardData.tasksTree[deckName]).forEach(area => {
+ dashboardData.tasksTree[deckName][area].forEach(task => {
+ let weight = task.amount > 0 ? task.amount : 1;
+ deckTargetAmount += weight;
+ deckCompletedAmount += (weight * ((task.progress || 0) / 100));
+ 
+ deckUnweightedSum += (task.progress || 0);
+ deckTaskCount++;
+ });
+ });
+ }
+ 
+ let progressVal = 0;
+ if (deckTargetAmount > 0) {
+ progressVal = Math.round((deckCompletedAmount / deckTargetAmount) * 100);
+ } else if (deckTaskCount > 0) {
+ progressVal = Math.round(deckUnweightedSum / deckTaskCount);
+ }
+
+ progressPill = `<span class="text-[10px] bg-slate-100 text-slate-500 font-bold px-2 py-1 rounded" title="Średnia ważona ilością">Postęp: ${progressVal}%</span>`;
+ }
+
+ let cardHtml = `
+ <div class="bg-white border border-slate-200 rounded-lg shadow-sm p-4 flex flex-col justify-between" id="${cardId}">
+ <div class="flex justify-between items-center mb-4">
+ <h4 class="font-bold text-seaviaBlue text-sm uppercase tracking-wider">${deckName}</h4>
+ ${progressPill}
+ </div>
+ <div class="relative w-full h-48 mx-auto">
+ <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-2">
+ <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Godziny</span>
+ <span id="${centerHoursId}" class="text-lg font-bold text-seaviaBlue">0.0h</span>
+ </div>
+ <canvas id="${canvasId}"></canvas>
+ </div>
+ </div>
+ `;
+ container.insertAdjacentHTML('beforeend', cardHtml);
+
+ let labels = [];
+ let values = [];
+ let totalDeckHours = 0;
+
+ if (deckName === 'TRAVEL') {
+ let travelItems = dashboardData.spisHours.filter(item => normalizeDeckName(item.deck) === 'TRAVEL');
+ let travelGroup = {};
+ travelItems.forEach(item => {
+ const areaKey = String(item.area || '').trim();
+ travelGroup[areaKey] = (travelGroup[areaKey] || 0) + item.hours;
+ });
+ labels = Object.keys(travelGroup);
+ values = Object.values(travelGroup).map(v => Math.round(v * 10) / 10);
+ totalDeckHours = travelHours;
+ } else if (deckName === 'BREAK') {
+ let breakItems = dashboardData.spisHours.filter(item => normalizeDeckName(item.deck) === 'BREAK');
+ let breakGroup = {};
+ breakItems.forEach(item => {
+ const areaKey = String(item.area || '').trim();
+ breakGroup[areaKey] = (breakGroup[areaKey] || 0) + item.hours;
+ });
+ labels = Object.keys(breakGroup);
+ values = Object.values(breakGroup).map(v => Math.round(v * 10) / 10);
+ totalDeckHours = breakHours;
+ } else {
+ const areas = deckHours[deckName] || {};
+ labels = Object.keys(areas);
+ values = Object.values(areas).map(v => Math.round(v * 10) / 10);
+ totalDeckHours = values.reduce((a, b) => a + b, 0);
+ }
+
+ const centerHoursEl = document.getElementById(centerHoursId);
+ if (centerHoursEl) {
+ centerHoursEl.innerText = totalDeckHours.toFixed(1) + 'h';
+ }
+
+ const ctx = document.getElementById(canvasId).getContext('2d');
+ deckChartInstances[deckName] = new Chart(ctx, {
+ type: 'doughnut',
+ data: {
+ labels: labels,
+ datasets: [{
+ data: values,
+ backgroundColor: getColors(labels.length),
+ borderWidth: 1.5
+ }]
+ },
+ options: {
+ responsive: true,
+ maintainAspectRatio: false,
+ cutout: '75%',
+ plugins: {
+ customCenterHoursId: centerHoursId,
+ legend: {
+ position: 'bottom',
+ onClick: legendClickHandler,
+ labels: {
+ boxWidth: 10,
+ font: { size: 9, weight: 'bold' },
+ padding: 10
+ }
+ },
+ tooltip: {
+ callbacks: {
+ label: function(context) {
+ let label = context.label || '';
+ if (label) label += ': ';
+ if (context.parsed !== null) {
+ label += context.parsed.toFixed(1) + 'h';
+ }
+ return label;
+ }
+ }
+ }
+ }
+ }
+ });
+ });
+
+ // 5. Renderowanie dużego wykresu kołowego EXTRA JOB pod wszystkimi pokładami
+ let extraItems = dashboardData.spisHours.filter(item =>
+ item.idPrac && item.idPrac.toUpperCase().includes('- EXTRA JOB')
+ );
+ let hasExtraJob = extraItems.length > 0;
+
+ // Usunięcie starej karty Extra Job, jeśli istniała, by uniknąć duplikatów
+ const oldExtraCard = document.getElementById('extraJobLargeCard');
+ if (oldExtraCard) {
+ oldExtraCard.remove();
+ }
+
+ if (hasExtraJob) {
+ const parentContainer = container.parentElement;
+ parentContainer.insertAdjacentHTML('beforeend', `
+ <div id="extraJobLargeCard" class="bg-white border border-slate-200 rounded-lg shadow-sm p-4 md:p-8 mt-6">
+ <h3 class="font-black text-seaviaBlue text-base uppercase tracking-wider mb-6 text-center">EXTRA JOB</h3>
+
+ <div class="flex flex-col md:flex-row items-center justify-between gap-6 w-full">
+ <!-- Lewa kolumna: Legenda Pokładów (Rozłożona na 2 kolumny) -->
+ <div class="w-full md:w-[35%] grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs font-semibold text-slate-700 max-h-64 overflow-y-auto pr-1" id="extra_deck_legend">
+ </div>
+ <!-- Środkowa kolumna: Dwupoziomowy wykres kołowy -->
+ <div class="relative w-full md:w-[40%] h-64 flex items-center justify-center">
+ <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-2">
+ <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Godziny</span>
+ <span id="centerChartHours_extra" class="text-2xl font-black text-seaviaBlue">0.0h</span>
+ </div>
+ <canvas id="extraJobChartCanvas"></canvas>
+ </div>
+ <!-- Prawa kolumna: Legenda Obszarów (1 kolumna) -->
+ <div class="w-full md:w-[25%] flex flex-col gap-1.5 text-xs font-semibold text-slate-700 max-h-64 overflow-y-auto pr-1" id="extra_area_legend">
+ </div>
+ </div>
+ </div>
+ `);
+
+ let extraDeckData = {};
+ let extraAreaData = {};
+ let totalExtraHours = 0;
+
+ extraItems.forEach(item => {
+ const deckKey = normalizeDeckName(item.deck);
+ const areaKey = String(item.area || '').trim();
+ extraDeckData[deckKey] = (extraDeckData[deckKey] || 0) + item.hours;
+ extraAreaData[areaKey] = (extraAreaData[areaKey] || 0) + item.hours;
+ totalExtraHours += item.hours;
+ });
+
+ const extraDeckLabels = Object.keys(extraDeckData);
+ const extraDeckValues = Object.values(extraDeckData).map(v => Math.round(v * 10) / 10);
+ const extraDeckColors = getColors(extraDeckLabels.length);
+
+ const extraAreaLabels = Object.keys(extraAreaData);
+ const extraAreaValues = Object.values(extraAreaData).map(v => Math.round(v * 10) / 10);
+ const extraAreaColors = getColors(extraAreaLabels.length).reverse();
+
+ // Zapisujemy stany aktywności i oryginalne dane
+ extraChartOriginalData = { deckLabels: extraDeckLabels, deckValues: extraDeckValues, areaLabels: extraAreaLabels, areaValues: extraAreaValues };
+ extraDeckLabels.forEach(l => extraChartActiveState.decks[l] = true);
+ extraAreaLabels.forEach(l => extraChartActiveState.areas[l] = true);
+
+ // Renderowanie legendy HTML dla EXTRA JOB - Pokłady (Lewa strona - 2 kolumny)
+ let extraDeckLegendHtml = `<span class="col-span-2 text-[10px] text-slate-400 uppercase font-black tracking-wider border-b pb-1 mb-1">Pokłady</span>`;
+ extraDeckLabels.forEach((label, i) => {
+ const color = extraDeckColors[i];
+ extraDeckLegendHtml += `
+ <div class="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-slate-100 cursor-pointer transition-all truncate" onclick="handleExtraLegendClick('deck', '${label}', this)">
+ <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: ${color}"></span>
+ <span class="truncate font-medium" title="${label}">${label}</span>
+ </div>
+ `;
+ });
+ document.getElementById('extra_deck_legend').innerHTML = extraDeckLegendHtml;
+
+ // Renderowanie legendy HTML dla EXTRA JOB - Obszary (Prawa strona - 1 kolumna)
+ let extraAreaLegendHtml = `<span class="text-[10px] text-slate-400 uppercase font-black tracking-wider border-b pb-1 mb-1">Obszary</span>`;
+ extraAreaLabels.forEach((label, i) => {
+ const color = extraAreaColors[i];
+ extraAreaLegendHtml += `
+ <div class="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-slate-100 cursor-pointer transition-all truncate" onclick="handleExtraLegendClick('area', '${label}', this)">
+ <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: ${color}"></span>
+ <span class="truncate font-medium" title="${label}">${label}</span>
+ </div>
+ `;
+ });
+ document.getElementById('extra_area_legend').innerHTML = extraAreaLegendHtml;
+
+ const centerExtraHoursEl = document.getElementById('centerChartHours_extra');
+ if (centerExtraHoursEl) {
+ centerExtraHoursEl.innerText = totalExtraHours.toFixed(1) + 'h';
+ }
+
+ // Rysowanie wykresu EXTRA JOB (Nested Doughnut)
+ const extraCtx = document.getElementById('extraJobChartCanvas').getContext('2d');
+ deckChartInstances['EXTRA JOB'] = new Chart(extraCtx, {
+ type: 'doughnut',
+ data: {
+ datasets: [
+ {
+ label: 'Obszary (Zewnętrzny)',
+ data: extraAreaValues,
+ backgroundColor: extraAreaColors,
+ borderWidth: 1.5,
+ hoverOffset: 4
+ },
+ {
+ label: 'Pokłady (Wewnętrzny)',
+ data: extraDeckValues,
+ backgroundColor: extraDeckColors,
+ borderWidth: 1.5,
+ hoverOffset: 4
+ }
+ ]
+ },
+ options: {
+ responsive: true,
+ maintainAspectRatio: false,
+ cutout: '50%',
+ plugins: {
+ legend: {
+ display: false // Wyłączona domyślna legenda
+ },
+ tooltip: {
+ callbacks: {
+ label: function(context) {
+ const datasetIndex = context.datasetIndex; // 0 = Obszary, 1 = Pokłady
+ const index = context.dataIndex;
+ const label = datasetIndex === 0 ? extraAreaLabels[index] : extraDeckLabels[index];
+ const val = context.raw;
+ return `${context.dataset.label.split(' ')[0]} - ${label}: ${val.toFixed(1)}h`;
+ }
+ }
+ }
+ }
+ }
+ });
+ }
+ }
+</script>
+<div class="bg-white rounded-lg shadow-sm p-4 md:p-8 border border-gray-100 animate-fade-in">
+ <!-- Nagłówek Komponentu -->
+ <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4 gap-4">
+ <div>
+ <h2 class="text-2xl font-bold text-seaviaBlue">
+ <i class="fa-solid fa-chart-line mr-2 text-candidoRed"></i> Status Realizacji Projektu
+ </h2>
+ <p class="text-sm text-slate-500 mt-1">Podgląd postępów prac, wypracowanych godzin oraz statystyk zespołu.</p>
+ </div>
+ </div>
+
+ <!-- Górne panele KPI (Statystyki) -->
+ <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+ <!-- KPI 1: Całkowity postęp projektu -->
+ <div class="bg-slate-50 p-4 rounded-lg border border-slate-200 text-center">
+ <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Całkowity Postęp</span>
+ <div id="dashTotalProgress" class="text-3xl font-black text-candidoRed">0.0%</div>
+ <span class="text-[10px] text-slate-400 mt-1 block">Średnia ważona z czasu</span>
+ </div>
+
+ <!-- KPI 2: Wszystkie wypracowane godziny -->
+ <div class="bg-slate-50 p-4 rounded-lg border border-slate-200 text-center">
+ <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Wypracowane Godziny</span>
+ <div id="dashTotalHours" class="text-3xl font-black text-seaviaBlue">0h</div>
+ <span class="text-[10px] text-slate-400 mt-1 block">Zatwierdzone w bazie</span>
+ </div>
+
+ <!-- KPI 3: Aktywni technicy -->
+ <div class="bg-slate-50 p-4 rounded-lg border border-slate-200 text-center">
+ <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Aktywni Technicy</span>
+ <div id="dashActiveTechs" class="text-3xl font-black text-emerald-600">0</div>
+ <span class="text-[10px] text-slate-400 mt-1 block">Obecni na projekcie</span>
+ </div>
+
+ <!-- KPI 4: Wszyscy zarejestrowani technicy -->
+ <div class="bg-slate-50 p-4 rounded-lg border border-slate-200 text-center">
+ <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Wszyscy Technicy</span>
+ <div id="dashTotalTechs" class="text-3xl font-black text-slate-700">0</div>
+ <span class="text-[10px] text-slate-400 mt-1 block">Biorący udział od początku</span>
+ </div>
+ </div>
+
+ <!-- Sekcja Głównego Wykresu Kołowego -->
+ <div class="bg-white border border-slate-200 rounded-lg shadow-sm p-6 mb-8">
+ <div class="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
+ <h3 class="text-lg font-bold text-seaviaBlue text-center sm:text-left">Postęp Główny (Z podziałem na Pokłady)</h3>
+ <div class="flex gap-2 text-xs bg-slate-100 p-1 rounded border border-slate-200">
+ <button id="btnGroupDeck" onclick="changeMainChartGroup('deck')" class="px-4 py-2 rounded-md text-xs font-bold transition-all bg-seaviaBlue text-white shadow-sm">
+ Podział na Pokłady
+ </button>
+ <button id="btnGroupArea" onclick="changeMainChartGroup('area')" class="px-4 py-2 rounded-md text-xs font-bold transition-all text-slate-600 hover:text-seaviaBlue">
+ Podział na Obszary
+ </button>
+ </div>
+ </div>
+
+ <div class="relative w-full max-w-md mx-auto h-72">
+ <!-- Element pozycjonowany absolutnie wyświetlający godziny wewnątrz pierścienia (Chart.js cutout) -->
+ <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-4">
+ <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Godziny</span>
+ <span id="centerChartHours_main" class="text-2xl font-bold text-seaviaBlue transition-all">0h</span>
+ </div>
+ <canvas id="mainProjectChart" class="w-full h-full"></canvas>
+ </div>
+ </div>
+
+ <!-- Sekcja Kart Wykresów Szczegółowych dla Pokładów -->
+ <div class="border-t border-slate-100 pt-6">
+ <h3 class="text-lg font-bold text-seaviaBlue mb-6">Postępy na poszczególnych pokładach</h3>
+ <!-- Scripts_Realizacja dynamicznie wstrzykuje karty wykresów do poniższego kontenera -->
+ <div id="deckChartsContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+ <!-- Dynamiczne wykresy kołowe (DK) i Prace Dodatkowe (EXTRA JOB) -->
+ </div>
+ </div>
+</div>
