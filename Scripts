@@ -1,0 +1,1537 @@
+<script>
+  let appData = null;
+  let currentTechSchedule = [];
+
+  // 1. INICJALIZACJA
+  window.onload = function() {
+    const today = new Date().toISOString().split('T')[0];
+    if(document.getElementById('workDate')) document.getElementById('workDate').value = today;
+    if(document.getElementById('infoDate')) document.getElementById('infoDate').innerText = new Date().toLocaleDateString('pl-PL');
+    fetchData();
+  };
+
+  function refreshData() {
+    console.log('Manual refresh: pobieram dane z pliku/bazy...');
+    const loadingScreen = document.getElementById('loadingScreen');
+    const mainContent = document.getElementById('mainContent');
+    if (loadingScreen) loadingScreen.classList.remove('hidden');
+    if (mainContent) mainContent.classList.add('hidden');
+    fetchData();
+  }
+
+  function fetchData() {
+    if (typeof google === 'undefined' || !google.script) {
+      console.warn('google.script jest niedostępne, brak połączenia z backendem.');
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler((data) => {
+        appData = data;
+        window.initialData = data;
+        onDataLoaded(data);
+      })
+      .withFailureHandler(err => {
+          console.error('Błąd pobierania:', err);
+          alert('Błąd pobierania danych z serwera: ' + err);
+          const loadingScreen = document.getElementById('loadingScreen');
+          const mainContent = document.getElementById('mainContent');
+          if (loadingScreen) loadingScreen.classList.add('hidden');
+          if (mainContent) mainContent.classList.remove('hidden');
+      })
+      .getInitialData();
+  }
+
+  // 2. WYPEŁNIANIE DANYCH PO POBRANIU
+  function onDataLoaded(data) {
+    console.log("Dane pobrane z serwera:", data);
+    appData = data;
+    window.initialData = data;
+    
+    // Konfiguracja przełącznika Technik/Team
+    if (typeof switchAssignMode === 'function') {
+      switchAssignMode();
+    }
+    const deckSelect = document.getElementById('deckSelect');
+    let totalTasks = 0;
+    
+    if(deckSelect && data.tasksTree) {
+      deckSelect.innerHTML = '<option value="" disabled selected>Najpierw wybierz pokład...</option>';
+      Object.keys(data.tasksTree).sort().forEach(deck => {
+        let opt = document.createElement('option');
+        opt.value = deck; opt.innerText = deck;
+        deckSelect.appendChild(opt);
+        Object.keys(data.tasksTree[deck]).forEach(area => {
+          totalTasks += data.tasksTree[deck][area].length;
+        });
+      });
+
+      const customDeckOpt = document.createElement('option');
+      customDeckOpt.value = '__CUSTOM_DECK__';
+      customDeckOpt.innerText = '➕ Dodaj nowy pokład (wpisz ręcznie)';
+      deckSelect.appendChild(customDeckOpt);
+    }
+    // ODBLOKOWANIE EKRANU
+    const loadingScreen = document.getElementById('loadingScreen');
+    const mainContent = document.getElementById('mainContent');
+    if (loadingScreen) loadingScreen.classList.add('hidden');
+    if (mainContent) mainContent.classList.remove('hidden');
+    
+    // Uruchomienie zew. skryptów
+    if (typeof initDashboard === 'function') initDashboard(data);
+    if (typeof renderTechnicians === 'function') renderTechnicians(data);
+    if (typeof renderRoomsTable === 'function') renderRoomsTable(data);
+  }
+
+  function isActiveTechnician(tech) {
+    if (!tech || !tech.name) return false;
+    const status = String(tech.status || '').trim().toLowerCase();
+    const normalized = status.replace(/[^a-z]/g, '');
+
+    if (!normalized) return false;
+
+    const inactiveValues = ['nieaktywny', 'inactive', 'offline', 'off', 'disabled', 'nieaktywna'];
+    const activeValues = ['aktywny', 'active', 'aktywna', 'working', 'online', 'wpracy', 'pracuje'];
+
+    if (inactiveValues.some(v => normalized.includes(v.replace(/[^a-z]/g, '')))) return false;
+    return activeValues.some(v => normalized === v || normalized.includes(v));
+  }
+
+  // --- NOWE: OBSŁUGA PRZEŁĄCZNIKA TECHNIK / TEAM ---
+  function switchAssignMode() {
+    const modeObj = document.querySelector('input[name="assignMode"]:checked');
+    if (!modeObj || !appData) return;
+    const mode = modeObj.value;
+    
+    const targetSelect = document.getElementById('assignTarget');
+    const label = document.getElementById('assignTargetLabel');
+    targetSelect.innerHTML = '<option value="" disabled selected>Wybierz...</option>';
+
+    const activeTechnicians = (appData.techniciansDetails || []).filter(isActiveTechnician);
+
+    if (mode === 'tech') {
+      label.innerText = 'Wybierz technika';
+      activeTechnicians.forEach(tech => {
+        let opt = document.createElement('option');
+        opt.value = tech.name; opt.innerText = tech.name;
+        targetSelect.appendChild(opt);
+      });
+    } else {
+      label.innerText = 'Wybierz drużynę (Team)';
+      const teams = [...new Set(activeTechnicians.map(t => t.team).filter(t => t && t !== ''))].sort();
+      teams.forEach(team => {
+        let opt = document.createElement('option');
+        opt.value = team; opt.innerText = team;
+        targetSelect.appendChild(opt);
+      });
+    }
+    onTargetOrDateChange();
+  }
+
+  // 3. OBSŁUGA FORMULARZA KARTY ZADAŃ
+  function onTargetOrDateChange() {
+    const modeObj = document.querySelector('input[name="assignMode"]:checked');
+    if(!modeObj) return;
+    const mode = modeObj.value;
+    const target = document.getElementById('assignTarget').value;
+    const date = document.getElementById('workDate').value;
+    const scheduleSection = document.getElementById('scheduleSection');
+    const scheduleList = document.getElementById('scheduleList');
+    const scheduleTitle = document.getElementById('scheduleTitle');
+    const timeStart = document.getElementById('timeStart').value;
+    const timeEnd = document.getElementById('timeEnd').value;
+    resetTimeErrors();
+
+    if (!target || !date || !scheduleSection) {
+      if (scheduleSection) scheduleSection.classList.add('hidden');
+      currentTechSchedule = [];
+      return;
+    }
+
+    scheduleSection.classList.remove('hidden');
+    scheduleTitle.innerText = mode === 'tech' ? 'Zadania technika w wybranym przedziale' : 'Zadania teamu w wybranym przedziale';
+
+    let techsToQuery = [];
+    if (mode === 'tech') {
+      techsToQuery = (appData.techniciansDetails || []).filter(t => t.name === target && isActiveTechnician(t)).map(t => t.name);
+    } else {
+      techsToQuery = (appData.techniciansDetails || []).filter(t => t.team === target && isActiveTechnician(t)).map(t => t.name);
+    }
+
+    if (techsToQuery.length === 0) {
+      scheduleList.innerHTML = '<li class="text-orange-500 font-medium">Brak aktywnych techników przypisanych do tego teamu.</li>';
+      currentTechSchedule = [];
+      return;
+    }
+
+    if (!timeStart || !timeEnd || timeStart >= timeEnd) {
+      scheduleList.innerHTML = '<li class="text-slate-500 font-medium">Wybierz godzinę rozpoczęcia i zakończenia, aby zobaczyć zadania w tym przedziale czasu.</li>';
+      currentTechSchedule = [];
+      return;
+    }
+
+    scheduleList.innerHTML = '<li class="text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-1"></i> Pobieranie harmonogramu...</li>';
+
+    google.script.run
+      .withSuccessHandler(tasks => {
+        currentTechSchedule = tasks || [];
+        if (!currentTechSchedule.length) {
+          scheduleList.innerHTML = '<li class="text-emerald-600 font-medium"><i class="fa-solid fa-check mr-1"></i> Brak zadań w tym przedziale czasu.</li>';
+        } else {
+          scheduleList.innerHTML = currentTechSchedule.map(t => {
+            const taskPayload = encodeURIComponent(JSON.stringify(t));
+            return `<li class="flex justify-between items-center group py-2 border-b border-slate-100 last:border-0 gap-2">
+               <span class="flex-1 min-w-0">
+                 ${mode === 'team' ? `<span class="font-bold text-slate-500 mr-2">[${t.techName}]</span>` : ''}
+                 <span class="text-candidoRed font-bold mr-2">${t.start} - ${t.end}</span>
+                 <span class="text-slate-400">|</span> ${t.deck}
+                 <span class="text-slate-400">|</span> ${t.taskName}
+               </span>
+               <span class="flex items-center gap-2">
+                 <button type="button" data-task="${taskPayload}" onclick="editTaskEntryFromSchedule(this.dataset.task)" class="text-slate-500 hover:text-seaviaBlue transition-colors p-1 px-2" title="Edytuj zadanie technika">
+                   <i class="fa-solid fa-pen"></i>
+                 </button>
+                 <button type="button" onclick="cancelTask(${t.dbRowIndex})" class="text-slate-300 hover:text-red-500 transition-colors p-1 px-2" title="Anuluj to zadanie w bazie">
+                   <i class="fa-solid fa-trash-can"></i>
+                 </button>
+               </span>
+             </li>`;
+          }).join('');
+        }
+        validateTimes();
+      })
+      .getTasksForTechnicians(techsToQuery, date, timeStart, timeEnd);
+  }
+
+  function editTaskEntryFromSchedule(taskJson) {
+    try {
+      const task = JSON.parse(decodeURIComponent(taskJson || ''));
+      if (task) editTaskEntry(task);
+    } catch (err) {
+      console.error('Błąd odczytu zadania do edycji:', err);
+      alert('Nie udało się otworzyć edycji zadania.');
+    }
+  }
+
+  function editTaskEntry(task) {
+    if (!task || !task.dbRowIndex) {
+      alert('Brak danych zadania do edycji.');
+      return;
+    }
+
+    const modalId = 'editTaskModal';
+    const existingModal = document.getElementById(modalId);
+    if (existingModal) existingModal.remove();
+
+    const modal = document.createElement('div');
+    modal.id = modalId;
+    modal.style.position = 'fixed';
+    modal.style.inset = '0';
+    modal.style.background = 'rgba(15, 23, 42, 0.55)';
+    modal.style.display = 'flex';
+    modal.style.alignItems = 'center';
+    modal.style.justifyContent = 'center';
+    modal.style.zIndex = '9999';
+
+    const deckList = Object.keys((appData && appData.tasksTree) || {}).sort();
+    const currentDeck = (task.deck || '').trim();
+    const currentArea = task.area || '';
+    const currentRoom = task.roomId || '';
+    const currentTaskName = task.taskName || '';
+
+    const taskOptions = [];
+    if (appData && appData.tasksTree) {
+      Object.keys(appData.tasksTree).forEach(deck => {
+        Object.keys(appData.tasksTree[deck] || {}).forEach(area => {
+          (appData.tasksTree[deck][area] || []).forEach(item => {
+            taskOptions.push({
+              deck,
+              area,
+              taskName: item.taskName,
+              row: item.row,
+              roomId: item.roomId || ''
+            });
+          });
+        });
+      });
+    }
+
+    const deckOptions = deckList.map(deck => `<option value="${deck}" ${deck === currentDeck ? 'selected' : ''}>${deck}</option>`).join('');
+    const areaOptions = (() => {
+      if (!appData || !appData.tasksTree || !currentDeck) return '<option value="">Brak strefy</option>';
+      const areas = Object.keys(appData.tasksTree[currentDeck] || {}).sort();
+      if (!areas.length) return '<option value="">Brak strefy</option>';
+      return areas.map(area => `<option value="${area}" ${area === currentArea ? 'selected' : ''}>${area}</option>`).join('');
+    })();
+
+    const roomOptions = (() => {
+      const roomCatalog = Array.isArray(appData && appData.rooms) ? appData.rooms : [];
+      const deckRooms = roomCatalog.filter(room => String(room.deck || '').trim().toUpperCase() === String(currentDeck || '').trim().toUpperCase());
+      const rooms = [...new Set(deckRooms.map(room => String(room.room || room.name || '').trim()).filter(Boolean))];
+      if (!rooms.length) return '<option value="">Brak pokoi</option>';
+      return rooms.map(room => `<option value="${room}" ${room === currentRoom ? 'selected' : ''}>${room}</option>`).join('');
+    })();
+
+    const taskNameOptions = (() => {
+      const names = taskOptions
+        .filter(item => (!currentDeck || item.deck === currentDeck) && (!currentArea || item.area === currentArea))
+        .map(item => item.taskName)
+        .filter(Boolean);
+      const uniqueNames = [...new Set(names)];
+      if (!uniqueNames.length) return '<option value="">Brak zadań</option>';
+      return uniqueNames.map(name => `<option value="${name}" ${name === currentTaskName ? 'selected' : ''}>${name}</option>`).join('');
+    })();
+
+    modal.innerHTML = `
+      <div style="width:min(700px,90vw); background:white; border-radius:16px; box-shadow:0 30px 60px rgba(15,23,42,.25); border:1px solid #e2e8f0; overflow:hidden;">
+        <div style="padding:20px 24px; border-bottom:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0; font-size:20px; color:#0f172a; font-weight:700;">Edytuj zadanie technika</h3>
+          <button type="button" id="closeEditTaskModal" style="border:none; background:#f1f5f9; color:#0f172a; width:36px; height:36px; border-radius:999px; cursor:pointer; font-size:18px;">✕</button>
+        </div>
+        <div style="padding:24px; display:grid; gap:16px;">
+          <div style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px;">
+            <label style="display:flex; flex-direction:column; gap:6px; font-weight:700; color:#334155; font-size:13px;">
+              Od godziny
+              <input id="editTaskStart" type="time" value="${task.start || '08:00'}" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-size:14px;">
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-weight:700; color:#334155; font-size:13px;">
+              Do godziny
+              <input id="editTaskEnd" type="time" value="${task.end || '09:00'}" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-size:14px;">
+            </label>
+          </div>
+          <label style="display:flex; flex-direction:column; gap:6px; font-weight:700; color:#334155; font-size:13px;">
+            Pokład
+            <select id="editTaskDeck" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-size:14px;">${deckOptions}</select>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:6px; font-weight:700; color:#334155; font-size:13px;">
+            Powierzchnia / strefa
+            <select id="editTaskArea" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-size:14px;">${areaOptions}</select>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:6px; font-weight:700; color:#334155; font-size:13px;">
+            Pokój
+            <select id="editTaskRoom" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-size:14px;">${roomOptions}</select>
+          </label>
+          <label style="display:flex; flex-direction:column; gap:6px; font-weight:700; color:#334155; font-size:13px;">
+            Zadanie
+            <select id="editTaskName" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-size:14px;">${taskNameOptions}</select>
+          </label>
+        </div>
+        <div style="padding:0 24px 24px; display:flex; justify-content:flex-end; gap:12px;">
+          <button type="button" id="cancelEditTaskModal" style="border:1px solid #cbd5e1; color:#334155; background:#fff; border-radius:10px; padding:10px 18px; font-weight:700; cursor:pointer;">Anuluj</button>
+          <button type="button" id="saveEditTaskModal" style="border:none; background:#0f172a; color:#fff; border-radius:10px; padding:10px 18px; font-weight:700; cursor:pointer;">Zapisz</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const updateAreaOptions = () => {
+      const deck = document.getElementById('editTaskDeck').value;
+      const areaSelect = document.getElementById('editTaskArea');
+      const areaCatalog = appData && appData.tasksTree && appData.tasksTree[deck] ? Object.keys(appData.tasksTree[deck]).sort() : [];
+      areaSelect.innerHTML = areaCatalog.length ? areaCatalog.map(area => `<option value="${area}">${area}</option>`).join('') : '<option value="">Brak strefy</option>';
+      updateRoomOptions();
+      updateTaskOptions();
+    };
+
+    const updateRoomOptions = () => {
+      const deck = document.getElementById('editTaskDeck').value;
+      const roomSelect = document.getElementById('editTaskRoom');
+      const roomCatalog = Array.isArray(appData && appData.rooms) ? appData.rooms : [];
+      const rooms = [...new Set(roomCatalog.filter(room => String(room.deck || '').trim().toUpperCase() === String(deck || '').trim().toUpperCase()).map(room => String(room.room || room.name || '').trim()).filter(Boolean))];
+      roomSelect.innerHTML = rooms.length ? rooms.map(room => `<option value="${room}">${room}</option>`).join('') : '<option value="">Brak pokoi</option>';
+    };
+
+    const updateTaskOptions = () => {
+      const deck = document.getElementById('editTaskDeck').value;
+      const area = document.getElementById('editTaskArea').value;
+      const taskSelect = document.getElementById('editTaskName');
+      const entries = [];
+      if (appData && appData.tasksTree && appData.tasksTree[deck]) {
+        Object.keys(appData.tasksTree[deck]).forEach(areaKey => {
+          if (area && areaKey !== area) return;
+          (appData.tasksTree[deck][areaKey] || []).forEach(item => entries.push(item.taskName));
+        });
+      }
+      const unique = [...new Set(entries.filter(Boolean))];
+      taskSelect.innerHTML = unique.length ? unique.map(name => `<option value="${name}">${name}</option>`).join('') : '<option value="">Brak zadań</option>';
+    };
+
+    document.getElementById('editTaskDeck').addEventListener('change', updateAreaOptions);
+    document.getElementById('editTaskArea').addEventListener('change', updateTaskOptions);
+
+    document.getElementById('closeEditTaskModal').addEventListener('click', () => modal.remove());
+    document.getElementById('cancelEditTaskModal').addEventListener('click', () => modal.remove());
+
+    document.getElementById('saveEditTaskModal').addEventListener('click', () => {
+      const start = document.getElementById('editTaskStart').value.trim();
+      const end = document.getElementById('editTaskEnd').value.trim();
+      const deck = document.getElementById('editTaskDeck').value;
+      const area = document.getElementById('editTaskArea').value;
+      const roomId = document.getElementById('editTaskRoom').value;
+      const taskName = document.getElementById('editTaskName').value;
+
+      if (!start || !end || start >= end) {
+        alert('Wprowadź poprawny zakres godzin.');
+        return;
+      }
+      if (!deck || !area || !roomId || !taskName) {
+        alert('Wybierz pokład, strefę, pokój i zadanie.');
+        return;
+      }
+
+      const updatedPayload = {
+        start,
+        end,
+        deck,
+        area,
+        roomId,
+        taskName,
+        techName: task.techName || ''
+      };
+
+      google.script.run
+        .withSuccessHandler((res) => {
+          if (res && res.success) {
+            alert(res.message);
+            modal.remove();
+            onTargetOrDateChange();
+          } else {
+            alert('Błąd: ' + (res ? res.message : 'Brak odpowiedzi serwera'));
+          }
+        })
+        .withFailureHandler((err) => {
+          alert('Błąd połączenia: ' + err);
+        })
+        .updateWorkReportTask(task.dbRowIndex, updatedPayload);
+    });
+  }
+
+  function editTaskEntry(task) {
+    if (!task || !task.dbRowIndex) {
+      alert('Brak danych zadania do edycji.');
+      return;
+    }
+
+    const existingModal = document.getElementById('editTaskModal');
+    if (existingModal) existingModal.remove();
+
+    const taskEntries = Object.entries((appData && appData.tasksTree) || {})
+      .flatMap(([deck, areas]) => Object.entries(areas || {}).flatMap(([area, items]) =>
+        (items || []).map(item => ({ deck, area, ...item }))
+      ));
+    const taskInfo = taskEntries.find(item =>
+      normalizeDeckName(item.deck) === normalizeDeckName(task.deck) &&
+      String(item.area || '').trim().toLowerCase() === String(task.area || '').trim().toLowerCase() &&
+      normalizeRoomMatch(item.roomId) === normalizeRoomMatch(task.roomId) &&
+      String(item.taskName || '').trim().toLowerCase() === String(task.taskName || '').trim().toLowerCase()
+    ) || taskEntries.find(item =>
+      String(item.taskId || '').trim().toLowerCase() === String(task.taskId || '').trim().toLowerCase()
+    ) || {};
+    const progress = Number(taskInfo.progress) || 0;
+    const modal = document.createElement('div');
+    modal.id = 'editTaskModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    modal.innerHTML = `
+      <div style="width:min(700px,90vw);background:#fff;border-radius:16px;box-shadow:0 30px 60px rgba(15,23,42,.25);overflow:hidden;">
+        <div style="padding:20px 24px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;font-size:20px;color:#0f172a;font-weight:700;">Edytuj zadanie technika</h3>
+          <button type="button" id="closeEditTaskModal" style="border:none;background:#f1f5f9;color:#0f172a;width:36px;height:36px;border-radius:999px;cursor:pointer;font-size:18px;">✕</button>
+        </div>
+        <div style="padding:24px;display:grid;gap:16px;">
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;">
+            <label style="display:flex;flex-direction:column;gap:6px;font-weight:700;color:#334155;font-size:13px;">Od godziny<input id="editTaskStart" type="time" value="${task.start || '08:00'}" style="border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;"></label>
+            <label style="display:flex;flex-direction:column;gap:6px;font-weight:700;color:#334155;font-size:13px;">Do godziny<input id="editTaskEnd" type="time" value="${task.end || '09:00'}" style="border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;"></label>
+          </div>
+          <label style="display:flex;flex-direction:column;gap:6px;font-weight:700;color:#334155;font-size:13px;">Pokład<input disabled value="${task.deck || ''}" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;"></label>
+          <label style="display:flex;flex-direction:column;gap:6px;font-weight:700;color:#334155;font-size:13px;">Pomieszczenie<input disabled value="${task.roomId || ''}" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;"></label>
+          <label style="display:flex;flex-direction:column;gap:6px;font-weight:700;color:#334155;font-size:13px;">Powierzchnia / strefa<input disabled value="${task.area || ''}" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;"></label>
+          <label style="display:flex;flex-direction:column;gap:6px;font-weight:700;color:#334155;font-size:13px;">Nazwa zadania<input disabled value="${task.taskName || ''}" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;font-size:14px;"></label>
+          <label style="display:flex;flex-direction:column;gap:8px;font-weight:700;color:#334155;font-size:13px;">Procent wykonania
+            <div style="display:flex;align-items:center;gap:16px;"><input id="editTaskProgress" type="range" min="0" max="100" step="5" value="${progress}" style="width:100%;accent-color:#0f3460;"><span id="editTaskProgressValue" style="width:48px;text-align:right;font-size:18px;color:#0f3460;">${progress}%</span></div>
+          </label>
+        </div>
+        <div style="padding:0 24px 24px;display:flex;justify-content:flex-end;gap:12px;"><button type="button" id="cancelEditTaskModal" style="border:1px solid #cbd5e1;color:#334155;background:#fff;border-radius:10px;padding:10px 18px;font-weight:700;cursor:pointer;">Anuluj</button><button type="button" id="saveEditTaskModal" style="border:none;background:#0f172a;color:#fff;border-radius:10px;padding:10px 18px;font-weight:700;cursor:pointer;">Zapisz</button></div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    document.getElementById('closeEditTaskModal').onclick = () => modal.remove();
+    document.getElementById('cancelEditTaskModal').onclick = () => modal.remove();
+    document.getElementById('editTaskProgress').oninput = event => {
+      document.getElementById('editTaskProgressValue').textContent = event.target.value + '%';
+    };
+    document.getElementById('saveEditTaskModal').onclick = () => {
+      const start = document.getElementById('editTaskStart').value.trim();
+      const end = document.getElementById('editTaskEnd').value.trim();
+      const nextProgress = document.getElementById('editTaskProgress').value;
+      if (!start || !end || start >= end) {
+        alert('Wprowadź poprawny zakres godzin.');
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(res => {
+          if (res && res.success) {
+            modal.remove();
+            onTargetOrDateChange();
+          } else alert('Błąd: ' + (res ? res.message : 'Brak odpowiedzi serwera'));
+        })
+        .withFailureHandler(err => alert('Błąd połączenia: ' + err))
+        .updateWorkReportTask(task.dbRowIndex, {
+          start,
+          end,
+          progress: nextProgress,
+          taskId: task.taskId,
+          taskName: task.taskName,
+          deck: task.deck,
+          area: task.area,
+          roomId: task.roomId
+        });
+    };
+  }
+
+  function cancelTask(rowIndex) {
+    if(confirm("Czy na pewno chcesz anulować to zadanie? (Ślad po usunięciu zostanie w bazie)")) {
+      const scheduleList = document.getElementById('scheduleList');
+      scheduleList.innerHTML = '<li class="text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-1"></i> Usuwanie...</li>';
+      
+      google.script.run
+        .withSuccessHandler(res => {
+          if(res && res.success) {
+            onTargetOrDateChange();
+          } else {
+            alert("Błąd usuwania: " + (res ? res.message : 'Brak odpowiedzi'));
+            onTargetOrDateChange();
+          }
+        })
+        .cancelWorkReport(rowIndex);
+    }
+  }
+
+  function tasksOverlap(startA, endA, startB, endB) {
+    return startA < endB && endA > startB;
+  }
+
+  function validateTimes() {
+    const timeStart = document.getElementById('timeStart').value;
+    const timeEnd = document.getElementById('timeEnd').value;
+
+    resetTimeErrors();
+    if (!timeStart || !timeEnd) return;
+    if (timeStart >= timeEnd) {
+      showTimeError('Godzina zakończenia musi być późniejsza niż rozpoczęcia.');
+      return;
+    }
+
+    const mode = document.querySelector('input[name="assignMode"]:checked')?.value || 'tech';
+    const target = document.getElementById('assignTarget')?.value;
+    const date = document.getElementById('workDate')?.value;
+
+    if (!target || !date) return;
+
+    let conflictTasks = [];
+    if (currentTechSchedule && currentTechSchedule.length > 0) {
+      for (let task of currentTechSchedule) {
+        if (tasksOverlap(timeStart, timeEnd, task.start, task.end)) {
+          conflictTasks.push(task);
+        }
+      }
+    }
+
+    if (conflictTasks.length > 0) {
+      if (mode === 'team') {
+        let conflictNames = [...new Set(conflictTasks.map(t => t.techName))].join(', ');
+        showTimeError(`Zazębia się! Konflikt u: ${conflictNames}`);
+      } else {
+        let conflict = conflictTasks[0];
+        showTimeError(`Zazębia się z czasem: ${conflict.start} - ${conflict.end}`);
+      }
+    }
+  }
+
+  function showTimeError(message) {
+    const errorText = document.getElementById('timeErrorText');
+    const errorMsg = document.getElementById('timeErrorMsg');
+    const submitBtn = document.getElementById('submitBtn');
+    
+    if (errorText) errorText.innerHTML = `<i class="fa-solid fa-circle-exclamation mr-1"></i> ${message}`;
+    if (errorMsg) errorMsg.classList.remove('hidden');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.classList.add('opacity-50', 'cursor-not-allowed', 'grayscale');
+    }
+  }
+
+  function resetTimeErrors() {
+    const errorMsg = document.getElementById('timeErrorMsg');
+    const submitBtn = document.getElementById('submitBtn');
+    if(errorMsg) errorMsg.classList.add('hidden');
+    if(submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('opacity-50', 'cursor-not-allowed', 'grayscale');
+    }
+  }
+
+  // 4. KASKADOWE LISTY WYBORU ZADAŃ
+  function onDeckChange() {
+    const deckSelect = document.getElementById('deckSelect');
+    const deck = deckSelect ? deckSelect.value : '';
+    const customDeckInput = document.getElementById('customDeckInput');
+    const customDeckValue = customDeckInput ? customDeckInput.value.trim() : '';
+    const resolvedDeck = deck === '__CUSTOM_DECK__' ? customDeckValue : deck;
+
+    const areaSelect = document.getElementById('areaSelect');
+    const taskSelect = document.getElementById('taskSelect');
+    const roomSelect = document.getElementById('roomSelect');
+    const roomCatalog = Array.isArray(appData && appData.rooms) ? appData.rooms : [];
+    const customAreaInput = document.getElementById('customAreaInput');
+    const customRoomInput = document.getElementById('customRoomInput');
+    const customTaskContainer = document.getElementById('customTaskContainer');
+    const taskIdInput = document.getElementById('customTaskIdInput');
+    const taskUnitSelect = document.getElementById('taskUnitSelect');
+
+    if (customDeckInput) {
+      customDeckInput.classList.toggle('hidden', deck !== '__CUSTOM_DECK__');
+      if (deck !== '__CUSTOM_DECK__') customDeckInput.value = '';
+    }
+
+    areaSelect.innerHTML = '';
+    taskSelect.innerHTML = '<option value="" disabled selected>Wybierz zadanie...</option>';
+    roomSelect.innerHTML = '<option value="" disabled selected>Wybierz pokój...</option>';
+    taskSelect.disabled = true; taskSelect.classList.add('bg-gray-100', 'opacity-60');
+    roomSelect.disabled = true;
+    roomSelect.setAttribute('disabled', 'disabled');
+    roomSelect.classList.add('bg-gray-100', 'opacity-60');
+
+    const progressSection = document.getElementById('progressSection');
+    if (progressSection) progressSection.classList.add('hidden');
+    if(customAreaInput) customAreaInput.classList.add('hidden');
+    if(customRoomInput) customRoomInput.classList.add('hidden');
+    if(customTaskContainer) customTaskContainer.classList.add('hidden');
+    if (taskIdInput) {
+      taskIdInput.value = '';
+      taskIdInput.readOnly = false;
+      taskIdInput.classList.remove('bg-slate-100', 'text-slate-500');
+    }
+    if (taskUnitSelect) {
+      taskUnitSelect.value = '';
+      taskUnitSelect.disabled = false;
+      toggleTaskQuantity();
+    }
+
+    if (deck === '__CUSTOM_DECK__' && !customDeckValue) {
+      areaSelect.disabled = true;
+      areaSelect.classList.add('bg-gray-100', 'opacity-60');
+      roomSelect.disabled = true;
+      roomSelect.classList.add('bg-gray-100', 'opacity-60');
+      return;
+    }
+
+    const deckReady = Boolean(resolvedDeck);
+    if (deckReady) {
+      const fixedAreas = getFixedAreaOptions();
+      fixedAreas.forEach(({ value, label }) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.innerText = label;
+        areaSelect.appendChild(opt);
+      });
+
+      const deckTasks = appData && appData.tasksTree && appData.tasksTree[resolvedDeck]
+        ? Object.values(appData.tasksTree[resolvedDeck]).flat()
+        : [];
+      const roomOptions = new Map();
+      const addRoomOption = (roomNumber, roomName) => {
+        const number = String(roomNumber || '').trim();
+        const name = String(roomName || '').trim();
+        const key = normalizeRoomMatch(number || name);
+        if (!key) return;
+        const existing = roomOptions.get(key) || { roomNumber: number || name, roomName: name };
+        if (!existing.roomNumber && number) existing.roomNumber = number;
+        if (!existing.roomName && name) existing.roomName = name;
+        roomOptions.set(key, existing);
+      };
+      deckTasks.forEach(task => addRoomOption(task.roomId, ''));
+      roomCatalog
+        .filter(room => normalizeDeckName(String(room.deck || '')) === normalizeDeckName(String(resolvedDeck)))
+        .forEach(room => addRoomOption(room.room, room.name));
+      if (window.pendingRoomRecord && normalizeDeckName(window.pendingRoomRecord.deck) === normalizeDeckName(resolvedDeck)) {
+        addRoomOption(window.pendingRoomRecord.room, window.pendingRoomRecord.name);
+      }
+      const uniqueRooms = [...roomOptions.values()];
+
+      uniqueRooms.sort((a, b) => {
+        const aLabel = `${a.roomNumber || ''}${a.roomNumber && a.roomName ? ' - ' : ''}${a.roomName || ''}`.trim();
+        const bLabel = `${b.roomNumber || ''}${b.roomNumber && b.roomName ? ' - ' : ''}${b.roomName || ''}`.trim();
+        return aLabel.localeCompare(bLabel, undefined, { numeric: true, sensitivity: 'base' });
+      }).forEach(({ roomNumber, roomName }) => {
+        const label = `${roomNumber || ''}${roomNumber && roomName ? ' - ' : ''}${roomName || ''}`.trim();
+        if (!label) return;
+        const opt = document.createElement('option');
+        opt.value = roomNumber || roomName;
+        opt.innerText = label;
+        roomSelect.appendChild(opt);
+      });
+
+      const addRoomOpt = document.createElement('option');
+      addRoomOpt.value = '__ADD_ROOM__';
+      addRoomOpt.innerText = '➕ Dodaj pomieszczenie do pokładu';
+      roomSelect.appendChild(addRoomOpt);
+
+      roomSelect.disabled = false;
+      roomSelect.removeAttribute('disabled');
+      roomSelect.classList.remove('bg-gray-100', 'opacity-60');
+      roomSelect.classList.add('bg-white');
+
+      const areaCustomOpt = document.createElement('option');
+      areaCustomOpt.value = '__CUSTOM__';
+      areaCustomOpt.innerText = '➕ Inna powierzchnia (wpisz ręcznie)';
+      areaSelect.appendChild(areaCustomOpt);
+      areaSelect.disabled = false;
+      areaSelect.classList.remove('bg-gray-100', 'opacity-60');
+      areaSelect.classList.add('bg-white');
+
+      const taskCustomOpt = document.createElement('option');
+      taskCustomOpt.value = '__CUSTOM__';
+      taskCustomOpt.innerText = '➕ Inne zadanie (wpisz ręcznie)';
+      taskSelect.appendChild(taskCustomOpt);
+      taskSelect.disabled = false;
+      taskSelect.classList.remove('bg-gray-100', 'opacity-60');
+      taskSelect.classList.add('bg-white');
+    }
+
+    const taskTypeSelect = document.getElementById('taskTypeSelect');
+    if (taskTypeSelect) {
+      taskTypeSelect.innerHTML = '<option value="" disabled selected>Wybierz typ zadania...</option>';
+      const taskTypes = [
+        'MONTAŻ',
+        'MONTAŻ Z ODZYSKU',
+        'ROZBIÓRKA',
+        'ROZBIÓRKA Z ODZYSKIEM'
+      ];
+
+      taskTypes.forEach(type => {
+        const option = document.createElement('option');
+        option.value = type;
+        option.innerText = type;
+        taskTypeSelect.appendChild(option);
+      });
+    }
+
+    if (resolvedDeck && appData && appData.tasksTree && appData.tasksTree[resolvedDeck]) {
+      const existingTasks = [];
+      Object.keys(appData.tasksTree[resolvedDeck]).forEach(areaName => {
+        (appData.tasksTree[resolvedDeck][areaName] || []).forEach(item => {
+          const taskId = String(item.taskId || '').trim();
+          const taskName = String(item.taskName || item.taskType || '').trim();
+          const entryLabel = taskId && taskName ? `${taskId} - ${taskName}` : taskName;
+          if (entryLabel) existingTasks.push({ value: taskName || entryLabel, label: entryLabel });
+        });
+      });
+      const uniqueTasks = [...new Map(existingTasks.map(item => [item.value, item])).values()];
+      uniqueTasks.forEach(item => {
+        let opt = document.createElement('option');
+        opt.value = item.value;
+        opt.innerText = item.label;
+        taskSelect.appendChild(opt);
+      });
+    }
+  }
+
+  function getSelectedDeckValue() {
+    const deckSelect = document.getElementById('deckSelect');
+    const customDeckInput = document.getElementById('customDeckInput');
+    const selectedDeck = deckSelect ? deckSelect.value : '';
+    if (selectedDeck === '__CUSTOM_DECK__') {
+      return (customDeckInput ? customDeckInput.value.trim() : '').trim();
+    }
+    return String(selectedDeck || '').trim();
+  }
+
+  function normalizeAreaKey(value) {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z]/g, '');
+  }
+
+  function getFixedAreaOptions() {
+    return [
+      { value: 'PODŁOGI', label: 'Podłoga' },
+      { value: 'ŚCIANY', label: 'Ściany' },
+      { value: 'SUFITY', label: 'Sufit' },
+      { value: 'INSTALACJE', label: 'Instalacje' }
+    ];
+  }
+
+  function refreshTaskNameSuggestions() {
+    const list = document.getElementById('taskNameSuggestions');
+    if (!list) return;
+    const names = Object.values((appData && appData.tasksTree) || {})
+      .flatMap(areas => Object.values(areas).flat())
+      .map(item => String(item.taskName || '').trim())
+      .filter(Boolean);
+    list.innerHTML = [...new Map(names.map(name => [name.toLowerCase(), name])).values()]
+      .map(name => `<option value="${name.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></option>`)
+      .join('');
+  }
+
+  function matchFixedArea(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z]/g, '');
+
+    if (normalized.includes('sciany') || normalized.includes('sciana')) return 'ŚCIANY';
+    if (normalized.includes('podloga') || normalized.includes('podlogi')) return 'PODŁOGI';
+    if (normalized.includes('sufit') || normalized.includes('sufity')) return 'SUFITY';
+    if (normalized.includes('instalac')) return 'INSTALACJE';
+    if (normalized.includes('meble')) return 'INSTALACJE';
+    return String(value ?? '').trim();
+  }
+
+  function normalizeRoomMatch(value) {
+    return String(value ?? '').trim().toLowerCase().replace(/\s+/g, '');
+  }
+
+  function normalizeTaskType(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const upper = raw.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const compact = upper.replace(/\s+/g, ' ').trim();
+    const map = {
+      'ROZBIORKA': 'ROZBIÓRKA',
+      'MONTAZ': 'MONTAŻ',
+      'ROZBIORKA Z ODZYSKIEM': 'ROZBIÓRKA Z ODZYSKIEM',
+      'MONTAZ Z ODZYSKU': 'MONTAŻ Z ODZYSKU',
+      'MONTAZ Z ODZYSKIEM': 'MONTAŻ Z ODZYSKU'
+    };
+    return map[compact] || compact;
+  }
+
+  function getAreaSurfaceField(area) {
+    const normalized = String(area || '').trim().toUpperCase();
+    if (normalized === 'ŚCIANY') return 'wallSurface';
+    if (normalized === 'SUFITY') return 'ceilingSurface';
+    return 'surface';
+  }
+
+  function resolveRoomSurface() {
+    updateRoomDimensionsPanel();
+    const deck = getSelectedDeckValue();
+    const area = document.getElementById('areaSelect')?.value;
+    const roomSelect = document.getElementById('roomSelect');
+    const customRoomInput = document.getElementById('customRoomInput');
+    const roomValue = roomSelect && roomSelect.value && roomSelect.value !== '__CUSTOM__' ? roomSelect.value : (customRoomInput ? customRoomInput.value.trim() : '');
+
+    if (!deck || !roomValue) {
+      window.currentRoomSurface = 0;
+      return;
+    }
+
+    const surfaceField = getAreaSurfaceField(area);
+    const roomCatalog = Array.isArray(appData && appData.rooms) ? appData.rooms : [];
+    const catalogMatch = roomCatalog.find(room => {
+      const sameDeck = normalizeRoomMatch(String(room.deck || '')) === normalizeRoomMatch(String(deck || ''));
+      const roomName = String(room.name || '').trim();
+      const roomNumber = String(room.room || '').trim();
+      const sameRoom = normalizeRoomMatch(roomNumber) === normalizeRoomMatch(roomValue) || normalizeRoomMatch(roomName) === normalizeRoomMatch(roomValue);
+      return sameDeck && sameRoom;
+    });
+
+    if (catalogMatch) {
+      const surface = Number(catalogMatch[surfaceField] || 0) || (Number(catalogMatch.width || 0) * Number(catalogMatch.length || 0));
+      window.currentRoomSurface = Number(surface) || 0;
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(value => {
+        window.currentRoomSurface = Number(value) || 0;
+      })
+      .withFailureHandler(() => {
+        window.currentRoomSurface = 0;
+      })
+      .getRoomSurface(deck, area || '', roomValue);
+  }
+
+  function onRoomChange() {
+    const roomSelect = document.getElementById('roomSelect');
+    const customRoomInput = document.getElementById('customRoomInput');
+    if (!roomSelect || !customRoomInput) return;
+
+    if (roomSelect.value === "__ADD_ROOM__") {
+      const customDeckInput = document.getElementById('customDeckInput');
+      const deckSelect = document.getElementById('deckSelect');
+      const selectedDeck = deckSelect ? String(deckSelect.value || '').trim() : '';
+      const customDeck = customDeckInput ? String(customDeckInput.value || '').trim() : '';
+      const deck = selectedDeck === '__CUSTOM_DECK__' ? customDeck : selectedDeck;
+      const area = document.getElementById('areaSelect')?.value || '';
+      if (!deck || deck === '__CUSTOM_DECK__') {
+        roomSelect.value = '';
+        alert('Wpisz nazwę pokładu przed dodaniem pomieszczenia.');
+        return;
+      }
+      openRoomDimensionsModal(deck, area, roomSelect);
+      return;
+    }
+
+    if (roomSelect.value === "__CUSTOM__") {
+      customRoomInput.classList.remove('hidden');
+      customRoomInput.value = "";
+      customRoomInput.oninput = resolveRoomSurface;
+      window.currentRoomSurface = 0;
+    } else {
+      customRoomInput.classList.add('hidden');
+      customRoomInput.value = "";
+      customRoomInput.oninput = null;
+      updateRoomDimensionsPanel();
+      resolveRoomSurface();
+      refreshTasksForSelectedRoom();
+    }
+  }
+
+  function refreshTasksForSelectedRoom() {
+    const deck = getSelectedDeckValue();
+    const area = document.getElementById('areaSelect')?.value || '';
+    const room = document.getElementById('roomSelect')?.value || '';
+    const taskSelect = document.getElementById('taskSelect');
+    if (!taskSelect || !deck || !area || !room || room === '__CUSTOM__') return;
+
+    taskSelect.innerHTML = '<option value="" disabled selected>Wybierz zadanie...</option>';
+    const tasks = appData?.tasksTree?.[deck]?.[area] || [];
+    tasks
+      .filter(task => String(task.roomId || '').trim().toLowerCase() === room.trim().toLowerCase())
+      .forEach(task => {
+        const taskId = String(task.taskId || '').trim();
+        const taskName = String(task.taskName || task.taskType || '').trim();
+        if (!taskName) return;
+        const option = document.createElement('option');
+        option.value = taskName;
+        option.innerText = taskId ? `${taskId} - ${taskName}` : taskName;
+        option.dataset.row = task.row;
+        option.dataset.progress = task.progress || 0;
+        option.dataset.taskType = task.taskType || '';
+        option.dataset.taskId = taskId;
+        option.dataset.unit = task.unit || '';
+        option.dataset.amount = task.amount || 0;
+        taskSelect.appendChild(option);
+      });
+
+    const customOption = document.createElement('option');
+    customOption.value = '__CUSTOM__';
+    customOption.innerText = '➕ Inne zadanie (wpisz ręcznie)';
+    taskSelect.appendChild(customOption);
+    taskSelect.disabled = false;
+    taskSelect.classList.remove('bg-gray-100', 'opacity-60');
+    taskSelect.classList.add('bg-white');
+  }
+
+  function openRoomDimensionsModal(deck, area, roomSelect) {
+    const modal = document.getElementById('roomDimensionsModal');
+    if (!modal) return;
+    const close = () => {
+      modal.classList.add('hidden');
+      roomSelect.value = '';
+    };
+    const save = () => {
+      const roomName = String(document.getElementById('newRoomName').value || '').trim();
+      const roomNumber = String(document.getElementById('newRoomNumber').value || '').trim();
+      const length = Number(document.getElementById('newRoomLength').value || 0);
+      const width = Number(document.getElementById('newRoomWidth').value || 0);
+      const height = Number(document.getElementById('newRoomHeight').value || 0);
+      if ((!roomName && !roomNumber) || length <= 0 || width <= 0 || height <= 0) {
+        alert('Wpisz nazwę lub numer pomieszczenia oraz dodatnie wymiary.');
+        return;
+      }
+      const surface = length * width;
+      const wallSurface = 2 * (length + width) * height;
+      const selectedRoomValue = roomNumber || roomName;
+      const payload = { deck, area, name: roomName, room: roomNumber, width, length, height, surface, ceilingSurface: surface, wallSurface };
+      const saveButton = document.getElementById('saveRoomDimensions');
+      saveButton.disabled = true;
+      google.script.run
+        .withSuccessHandler(res => {
+          saveButton.disabled = false;
+          if (!res || !res.success) {
+            alert('Błąd dodania pomieszczenia: ' + (res ? res.message : 'Brak odpowiedzi serwera'));
+            return;
+          }
+          modal.classList.add('hidden');
+          window.pendingRoomRecord = { deck, area, name: roomName, room: roomNumber, surface };
+          document.getElementById('newRoomName').value = '';
+          document.getElementById('newRoomNumber').value = '';
+          document.getElementById('newRoomLength').value = '';
+          document.getElementById('newRoomWidth').value = '';
+          document.getElementById('newRoomHeight').value = '';
+          const newRoomOption = [...roomSelect.options].find(option => option.value === selectedRoomValue);
+          if (newRoomOption) {
+            newRoomOption.selected = true;
+          } else {
+            const option = document.createElement('option');
+            option.value = selectedRoomValue;
+            option.innerText = [roomNumber, roomName].filter(Boolean).join(' - ');
+            option.selected = true;
+            roomSelect.appendChild(option);
+          }
+          window.currentRoomSurface = surface;
+          roomSelect.disabled = false;
+          roomSelect.removeAttribute('disabled');
+          roomSelect.classList.remove('bg-gray-100', 'opacity-60');
+          roomSelect.classList.add('bg-white');
+          onRoomChange();
+        })
+        .withFailureHandler(err => {
+          saveButton.disabled = false;
+          alert('Nie udało się dodać pomieszczenia: ' + err);
+        })
+        .saveRoomRecord(payload);
+    };
+    modal.classList.remove('hidden');
+    document.getElementById('closeRoomDimensions').onclick = close;
+    document.getElementById('cancelRoomDimensions').onclick = close;
+    document.getElementById('saveRoomDimensions').onclick = save;
+    document.getElementById('newRoomName').focus();
+  }
+
+  function onAreaChange() {
+    const deck = getSelectedDeckValue();
+    const area = document.getElementById('areaSelect').value;
+    const taskSelect = document.getElementById('taskSelect');
+    const roomSelect = document.getElementById('roomSelect');
+    const customAreaInput = document.getElementById('customAreaInput');
+    const customRoomInput = document.getElementById('customRoomInput');
+    const customTaskContainer = document.getElementById('customTaskContainer');
+    
+    // Zapamiętaj wybrany pokój PRZED czyszczeniem
+    const previousRoom = roomSelect.value;
+    
+    taskSelect.innerHTML = '<option value="" disabled selected>Wybierz zadanie...</option>';
+    roomSelect.innerHTML = '<option value="" disabled selected>Wybierz pokój...</option>';
+    roomSelect.disabled = false;
+    roomSelect.removeAttribute('disabled');
+    roomSelect.classList.remove('bg-gray-100', 'opacity-60');
+    roomSelect.classList.add('bg-white');
+    if (customRoomInput) {
+      customRoomInput.classList.add('hidden');
+      customRoomInput.value = "";
+      customRoomInput.oninput = null;
+    }
+    window.currentRoomSurface = 0;
+    const progressSection = document.getElementById('progressSection');
+    if (progressSection) progressSection.classList.add('hidden');
+    
+    if(customTaskContainer) customTaskContainer.classList.add('hidden');
+    if (area === "__CUSTOM__") {
+      if(customAreaInput) customAreaInput.classList.remove('hidden');
+      if (roomSelect) {
+        let customRoomOpt = document.createElement('option');
+        customRoomOpt.value = "__CUSTOM__";
+        customRoomOpt.innerText = "➕ Wpisz pokój ręcznie";
+        customRoomOpt.selected = true;
+        roomSelect.appendChild(customRoomOpt);
+        customRoomInput.classList.remove('hidden');
+      }
+      taskSelect.disabled = false;
+      taskSelect.classList.remove('bg-gray-100', 'opacity-60');
+      taskSelect.classList.add('bg-white');
+      
+      let customTaskOpt = document.createElement('option');
+      customTaskOpt.value = "__CUSTOM__";
+      customTaskOpt.innerText = "➕ Wpisz zadanie ręcznie";
+      customTaskOpt.selected = true;
+      taskSelect.appendChild(customTaskOpt);
+      onTaskChange();
+    } else {
+      if(customAreaInput) customAreaInput.classList.add('hidden');
+
+      const roomCatalog = Array.isArray(appData && appData.rooms) ? appData.rooms : [];
+      const roomOptions = new Map();
+      const addRoomOption = (roomNumber, roomName) => {
+        const number = String(roomNumber || '').trim();
+        const name = String(roomName || '').trim();
+        const key = normalizeRoomMatch(number || name);
+        if (!key) return;
+        const existing = roomOptions.get(key) || { roomNumber: number || name, roomName: name };
+        if (!existing.roomNumber && number) existing.roomNumber = number;
+        if (!existing.roomName && name) existing.roomName = name;
+        roomOptions.set(key, existing);
+      };
+
+      if (deck && area && appData && appData.tasksTree && appData.tasksTree[deck] && appData.tasksTree[deck][area]) {
+        appData.tasksTree[deck][area].forEach(t => {
+          const roomId = String(t.roomId || '').trim();
+          addRoomOption(roomId, '');
+        });
+      }
+
+      roomCatalog
+        .filter(room => String(room.deck || '').trim() && String(room.deck || '').trim().toUpperCase() === String(deck || '').trim().toUpperCase())
+        .forEach(room => addRoomOption(room.room, room.name));
+
+      if (window.pendingRoomRecord && normalizeDeckName(window.pendingRoomRecord.deck) === normalizeDeckName(deck)) {
+        const pendingRoom = String(window.pendingRoomRecord.room || window.pendingRoomRecord.name || '').trim();
+        if (pendingRoom) addRoomOption(window.pendingRoomRecord.room, window.pendingRoomRecord.name);
+      }
+
+      const uniqueRooms = [...roomOptions.values()].sort((a, b) => {
+        const aLabel = `${a.roomNumber || ''}${a.roomNumber && a.roomName ? ' - ' : ''}${a.roomName || ''}`;
+        const bLabel = `${b.roomNumber || ''}${b.roomNumber && b.roomName ? ' - ' : ''}${b.roomName || ''}`;
+        return aLabel.localeCompare(bLabel, undefined, { numeric: true, sensitivity: 'base' });
+      });
+      let selectedFound = false;
+      uniqueRooms.forEach(({ roomNumber, roomName }) => {
+        const label = `${roomNumber || ''}${roomNumber && roomName ? ' - ' : ''}${roomName || ''}`.trim();
+        let opt = document.createElement('option');
+        opt.value = roomNumber || roomName;
+        opt.innerText = label || roomNumber || roomName;
+        roomSelect.appendChild(opt);
+        if ((roomNumber || roomName) === previousRoom && previousRoom !== '') {
+          opt.selected = true;
+          selectedFound = true;
+        }
+      });
+
+      if (uniqueRooms.length === 0) {
+      } else {
+      }
+
+      if (deck && area && appData && appData.tasksTree && appData.tasksTree[deck] && appData.tasksTree[deck][area]) {
+        appData.tasksTree[deck][area].forEach(t => {
+          if (String(t.roomId || '').trim() !== String(previousRoom || '').trim() && previousRoom) return;
+          const taskId = String(t.taskId || '').trim();
+          const taskName = String(t.taskName || t.taskType || '').trim();
+          const displayLabel = taskId && taskName ? `${taskId} - ${taskName}` : taskName;
+          if (!displayLabel) return;
+          let opt = document.createElement('option');
+          opt.value = taskName; opt.innerText = displayLabel;
+          opt.dataset.row = t.row;
+          opt.dataset.progress = t.progress;
+          opt.dataset.taskType = String(t.taskType || '').trim();
+          opt.dataset.taskId = taskId;
+          opt.dataset.unit = String(t.unit || '').trim();
+          opt.dataset.amount = t.amount || 0;
+          taskSelect.appendChild(opt);
+        });
+      }
+
+      let customOpt = document.createElement('option');
+      customOpt.value = "__CUSTOM__";
+      customOpt.innerText = "➕ Inne zadanie (wpisz ręcznie)";
+      taskSelect.appendChild(customOpt);
+      taskSelect.disabled = false;
+      taskSelect.classList.remove('bg-gray-100', 'opacity-60');
+      taskSelect.classList.add('bg-white');
+    }
+  }
+
+  function onTaskChange() {
+    const select = document.getElementById('taskSelect');
+    const customTaskContainer = document.getElementById('customTaskContainer');
+    const taskTypeSelect = document.getElementById('taskTypeSelect');
+    const opt = select.options[select.selectedIndex];
+    window.taskLengthEditorOpen = false;
+    window.confirmedTaskLength = 0;
+    const lengthConfirmButton = document.getElementById('taskLengthConfirm');
+    if (lengthConfirmButton) {
+      lengthConfirmButton.textContent = 'Potwierdź długość';
+      lengthConfirmButton.classList.remove('bg-green-800');
+      lengthConfirmButton.classList.add('bg-green-600', 'hover:bg-green-700');
+    }
+
+    if (taskTypeSelect && opt && opt.dataset && opt.dataset.taskType) {
+      taskTypeSelect.value = opt.dataset.taskType;
+    }
+
+    if (select.value === "__CUSTOM__") {
+      if(customTaskContainer) customTaskContainer.classList.remove('hidden');
+      if (taskTypeSelect) {
+        taskTypeSelect.disabled = false;
+        taskTypeSelect.classList.remove('bg-slate-100', 'text-slate-500', 'cursor-not-allowed');
+      }
+      document.getElementById('taskRowNumber').value = "";
+      // Wyczyść typ zadania, ID i jednostkę odziedziczone po przypadkowo klikniętym istniejącym zadaniu.
+      if (taskTypeSelect) taskTypeSelect.value = '';
+      document.getElementById('customTaskIdInput').value = '';
+      document.getElementById('customTaskIdInput').readOnly = false;
+      document.getElementById('customTaskIdInput').classList.remove('bg-slate-100', 'text-slate-500');
+      document.getElementById('customTaskIdInput').placeholder = 'ID opcjonalne - zostanie wygenerowane automatycznie';
+      document.getElementById('taskUnitSelect').value = '';
+      document.getElementById('taskUnitSelect').disabled = false;
+      const quantityContainer = document.getElementById('taskQuantityContainer');
+      const quantityLabel = document.getElementById('taskQuantityLabel');
+      const quantityInput = document.getElementById('taskQuantityInput');
+      const editButton = document.getElementById('editTaskQuantityButton');
+      if (editButton) editButton.classList.add('hidden');
+      if (quantityLabel) quantityLabel.textContent = 'Ile szt.';
+      if (quantityInput) {
+        quantityInput.readOnly = false;
+        quantityInput.value = '';
+      }
+      window.taskLengthEditorOpen = true;
+      toggleTaskQuantity();
+      refreshTaskNameSuggestions();
+      document.getElementById('progressRange').value = 0;
+      document.getElementById('progressValue').innerText = '0%';
+      document.getElementById('progressSection').classList.remove('hidden');
+    } else {
+      if(customTaskContainer) customTaskContainer.classList.add('hidden');
+      if (taskTypeSelect) {
+        taskTypeSelect.value = opt.dataset.taskType || '';
+        taskTypeSelect.disabled = true;
+        taskTypeSelect.classList.add('bg-slate-100', 'text-slate-500', 'cursor-not-allowed');
+      }
+      document.getElementById('taskRowNumber').value = opt.dataset.row;
+      document.getElementById('customTaskIdInput').value = opt.dataset.taskId || '';
+      document.getElementById('customTaskIdInput').readOnly = true;
+      document.getElementById('customTaskIdInput').classList.add('bg-slate-100', 'text-slate-500');
+      document.getElementById('customTaskIdInput').placeholder = 'ID przypisane do zadania';
+      const unitSelect = document.getElementById('taskUnitSelect');
+      unitSelect.value = opt.dataset.unit || '';
+      unitSelect.disabled = true;
+      updateRoomDimensionsPanel();
+      toggleTaskQuantity();
+      const quantityContainer = document.getElementById('taskQuantityContainer');
+      const quantityLabel = document.getElementById('taskQuantityLabel');
+      const quantityInput = document.getElementById('taskQuantityInput');
+      const lengthInput = document.getElementById('taskLengthInput');
+      const savedAmount = opt.dataset.amount || '';
+      const isLengthTask = String(opt.dataset.unit || '').toLowerCase() === 'm';
+      window.taskLengthEditorOpen = isLengthTask;
+      if (quantityLabel) quantityLabel.textContent = 'Zapamiętana ilość / powierzchnia';
+      const editButton = document.getElementById('editTaskQuantityButton');
+      if (editButton) editButton.classList.toggle('hidden', String(opt.dataset.unit || '').toLowerCase() !== 'm');
+      if (quantityInput) {
+        quantityInput.readOnly = String(opt.dataset.unit || '').toLowerCase() !== 'pis';
+        quantityInput.required = false;
+        quantityInput.value = String(opt.dataset.unit || '').toLowerCase() === 'pis' ? savedAmount : '';
+      }
+      if (lengthInput) {
+        lengthInput.readOnly = false;
+        lengthInput.required = false;
+        lengthInput.value = String(opt.dataset.unit || '').toLowerCase() === 'm' ? savedAmount : '';
+      }
+      if (quantityContainer) quantityContainer.classList.toggle('hidden', String(opt.dataset.unit || '').toLowerCase() !== 'pis');
+      const lengthContainer = document.getElementById('taskLengthContainer');
+      if (lengthContainer) lengthContainer.classList.toggle('hidden', !isLengthTask);
+      const prog = opt.dataset.progress || 0;
+      document.getElementById('progressRange').value = prog;
+      document.getElementById('progressValue').innerText = prog + '%';
+      document.getElementById('progressSection').classList.remove('hidden');
+    }
+  }
+
+  // 5. WYSYŁANIE FORMULARZA
+  function toggleTaskQuantity() {
+    const unit = document.getElementById('taskUnitSelect')?.value || '';
+    const container = document.getElementById('taskQuantityContainer');
+    const input = document.getElementById('taskQuantityInput');
+    const lengthContainer = document.getElementById('taskLengthContainer');
+    const lengthInput = document.getElementById('taskLengthInput');
+    if (!container || !input || !lengthContainer || !lengthInput) return;
+    const isPieces = unit === 'pis';
+    const isLength = unit === 'm';
+    container.classList.toggle('hidden', !isPieces);
+    lengthContainer.classList.toggle('hidden', !isLength);
+    input.required = isPieces;
+    if (!isPieces) input.value = '';
+    lengthInput.required = isLength;
+    if (!isLength && !isPieces) lengthInput.value = '';
+    updateRoomDimensionsPanel();
+  }
+
+  function getSelectedRoomDimensions() {
+    const deck = getSelectedDeckValue();
+    const roomValue = document.getElementById('roomSelect')?.value || '';
+    const rooms = Array.isArray(appData?.rooms) ? appData.rooms : [];
+    return rooms.find(room => normalizeRoomMatch(room.deck) === normalizeRoomMatch(deck) &&
+      [room.room, room.name].some(value => normalizeRoomMatch(value) === normalizeRoomMatch(roomValue))) || null;
+  }
+
+  function updateRoomDimensionsPanel() {
+    const room = getSelectedRoomDimensions();
+    const perimeter = 2 * (Number(room?.width || 0) + Number(room?.length || 0));
+    const buttons = {
+      dimBtnA: ['A', room?.width],
+      dimBtnB: ['B', room?.length],
+      dimBtnH: ['H', room?.height],
+      taskPerimeterButton: ['Obwód', perimeter]
+    };
+    Object.keys(buttons).forEach(id => {
+      const element = document.getElementById(id);
+      const label = buttons[id][0];
+      const number = Number(buttons[id][1] || 0);
+      if (element) element.textContent = number > 0 ? label + ' = ' + number.toLocaleString('pl-PL', { minimumFractionDigits: 1, maximumFractionDigits: 2 }) + ' m' : label + ' = - m';
+    });
+  }
+
+  function fillRoomPerimeter() {
+    const room = getSelectedRoomDimensions();
+    const input = document.getElementById('taskLengthInput');
+    if (!room || !input) return;
+    const perimeter = 2 * (Number(room.width || 0) + Number(room.length || 0));
+    if (perimeter > 0) {
+      input.value = perimeter.toFixed(2);
+    }
+  }
+
+  function selectRoomDimension(dimension) {
+    const room = getSelectedRoomDimensions();
+    const input = document.getElementById('taskLengthInput');
+    const value = Number(room?.[{ A: 'width', B: 'length', H: 'height' }[dimension]] || 0);
+    if (!input || value <= 0) return;
+    input.value = value.toFixed(2);
+  }
+
+  function confirmTaskLength() {
+    const lengthInput = document.getElementById('taskLengthInput');
+    const quantityInput = document.getElementById('taskQuantityInput');
+    const length = Number(lengthInput?.value || 0);
+    if (!length || length <= 0) {
+      alert('Wpisz długość pracy lub wybierz L = obwód.');
+      lengthInput?.focus();
+      return;
+    }
+    if (quantityInput) quantityInput.value = length.toFixed(2);
+    window.confirmedTaskLength = length;
+    window.taskLengthEditorOpen = false;
+    const button = document.getElementById('taskLengthConfirm');
+    if (button) {
+      button.textContent = 'ZAPISANO';
+      button.classList.remove('bg-green-600', 'hover:bg-green-700');
+      button.classList.add('bg-green-800');
+    }
+    const lengthContainer = document.getElementById('taskLengthContainer');
+    if (lengthContainer) lengthContainer.classList.add('hidden');
+    const quantityContainer = document.getElementById('taskQuantityContainer');
+    if (quantityContainer) quantityContainer.classList.remove('hidden');
+    const quantityLabel = document.getElementById('taskQuantityLabel');
+    if (quantityLabel) quantityLabel.textContent = 'Zapamiętana ilość / powierzchnia';
+  }
+
+  function openTaskLengthEditor() {
+    const unit = document.getElementById('taskUnitSelect')?.value || '';
+    if (unit !== 'm') return;
+    window.taskLengthEditorOpen = true;
+    const savedValue = Number(document.getElementById('taskQuantityInput')?.value || 0);
+    const lengthInput = document.getElementById('taskLengthInput');
+    if (lengthInput && savedValue > 0) lengthInput.value = savedValue;
+    updateRoomDimensionsPanel();
+    const lengthContainer = document.getElementById('taskLengthContainer');
+    if (lengthContainer) lengthContainer.classList.remove('hidden');
+  }
+
+  function submitForm(event) {
+    event.preventDefault();
+
+    const timeStart = document.getElementById('timeStart').value;
+    const timeEnd = document.getElementById('timeEnd').value;
+    const workDate = document.getElementById('workDate').value;
+    const mode = document.querySelector('input[name="assignMode"]:checked')?.value || 'tech';
+    const target = document.getElementById('assignTarget').value;
+
+    if (timeStart >= timeEnd) {
+      showTimeError('Godziny są niepoprawne!');
+      return;
+    }
+
+    const selectedTechs = mode === 'tech'
+      ? (appData.techniciansDetails || []).filter(t => t.name === target && isActiveTechnician(t)).map(t => t.name)
+      : (appData.techniciansDetails || []).filter(t => t.team === target && isActiveTechnician(t)).map(t => t.name);
+
+    if (selectedTechs.length === 0) {
+      alert('Wybrana grupa nie ma aktywnych techników.');
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(tasks => {
+        const conflicts = (tasks || []).filter(t => tasksOverlap(timeStart, timeEnd, t.start, t.end));
+        if (conflicts.length > 0) {
+          const names = [...new Set(conflicts.map(t => t.techName))].join(', ');
+          alert('Nie można zapisać zadania. Konflikt godzin z technikami: ' + names);
+          return;
+        }
+
+        continueSubmitForm();
+      })
+      .withFailureHandler(err => {
+        console.error('Błąd sprawdzania konfliktów:', err);
+        alert('Nie można sprawdzić konfliktów godzinowych.');
+      })
+      .getTasksForTechnicians(selectedTechs, workDate, timeStart, timeEnd);
+
+    function continueSubmitForm() {
+      let selectedDeck = document.getElementById('deckSelect').value;
+    if (selectedDeck === "__CUSTOM_DECK__") {
+      selectedDeck = document.getElementById('customDeckInput').value.trim();
+      if(!selectedDeck) { alert("Wpisz nazwę pokładu!"); return; }
+    }
+    if (!selectedDeck) { alert("Wybierz lub wpisz pokład!"); return; }
+
+    let selectedArea = document.getElementById('areaSelect').value;
+    if (selectedArea === "__CUSTOM__") {
+      selectedArea = document.getElementById('customAreaInput').value.trim();
+      if(!selectedArea) { alert("Wpisz nazwę obszaru!"); return; }
+    }
+    if (!selectedArea) { alert("Wybierz powierzchnię lub strefę!"); return; }
+
+    let selectedRoom = document.getElementById('roomSelect').value;
+    // Break/Travel nie dotyczą konkretnego pomieszczenia, więc pokój nie jest tu wymagany.
+    const deckForRoomCheck = String(selectedDeck || '').trim().toUpperCase();
+    const isRoomOptionalTask = deckForRoomCheck === 'TRAVEL' || deckForRoomCheck === 'BREAK';
+    if (selectedRoom === "__CUSTOM__") {
+      selectedRoom = document.getElementById('customRoomInput').value.trim();
+      if (!selectedRoom && !isRoomOptionalTask) { alert("Wpisz numer pokoju!"); return; }
+      window.currentRoomSurface = 0;
+    }
+    if (!selectedRoom && !isRoomOptionalTask) {
+      alert("Wybierz pokój!"); return;
+    }
+    const selectedRoomSurface = Number(window.currentRoomSurface) || 0;
+    
+    let isCustomTaskFlag = false; // NOWA FLAGA DO BACKENDU
+    let selectedTask = document.getElementById('taskSelect').value;
+    let customTaskIdValue = "";
+    const rawTaskType = (document.getElementById('taskTypeSelect')?.value || '').trim();
+    const taskType = normalizeTaskType(rawTaskType);
+    const taskUnitSelectEl = document.getElementById('taskUnitSelect');
+    let taskUnit = (taskUnitSelectEl?.value || '').trim();
+    if (!taskUnit && isRoomOptionalTask) {
+      // Break/Travel są rozliczane godzinowo, więc jednostka "h" jest tu domyślna.
+      taskUnit = 'h';
+      if (taskUnitSelectEl) taskUnitSelectEl.value = 'h';
+    }
+    const taskQuantity = Number(document.getElementById('taskQuantityInput')?.value || 0);
+    const taskLength = Number(document.getElementById('taskLengthInput')?.value || 0);
+    const taskLengthConfirmed = taskUnit === 'm' && taskLength > 0;
+    const isExtraJob = document.getElementById('extraJobCheckbox')?.checked || false;
+    
+    if (!isRoomOptionalTask && (!taskType || taskType === '__OTHER__')) {
+      alert('Wybierz typ zadania z listy. Dopuszczone wartości: ROZBIÓRKA, MONTAŻ, ROZBIÓRKA Z ODZYSKIEM, MONTAŻ Z ODZYSKU.');
+      return;
+    }
+
+    const taskTypeSelect = document.getElementById('taskTypeSelect');
+    if (taskTypeSelect) taskTypeSelect.value = taskType;
+    if (!selectedTask) {
+      alert('Wybierz zadanie lub opcję dodania nowego zadania.');
+      return;
+    }
+    if (selectedTask === '__CUSTOM__' && !taskUnit) {
+      alert('Wybierz jednostkę miary przed zapisaniem nowego zadania.');
+      document.getElementById('taskUnitSelect').focus();
+      return;
+    }
+    if (selectedTask === '__CUSTOM__' && taskUnit === 'pis' && (!Number.isInteger(taskQuantity) || taskQuantity < 1)) {
+      alert('Wpisz liczbę całkowitą sztuk większą od zera.');
+      return;
+    }
+    const isNewTask = selectedTask === '__CUSTOM__';
+    if (taskUnit === 'm' && taskLength <= 0) {
+      alert('Wpisz długość pracy lub wybierz jeden z wymiarów pomieszczenia.');
+      document.getElementById('taskLengthInput').focus();
+      return;
+    }
+    if (taskUnit === 'pis' && (!Number.isInteger(taskQuantity) || taskQuantity < 1)) {
+      alert('Wpisz liczbę całkowitą sztuk większą od zera.');
+      document.getElementById('taskQuantityInput').focus();
+      return;
+    }
+
+    if (selectedTask === "__CUSTOM__") {
+      selectedTask = document.getElementById('customTaskInput').value.trim();
+      customTaskIdValue = document.getElementById('customTaskIdInput').value.trim(); // POBIERANIE ID
+      isCustomTaskFlag = true;
+      if(!selectedTask) { alert("Wpisz nazwę zadania!"); return; }
+    }
+    // Ustalanie kto dostanie zadanie (Jeden technik czy cała lista)
+    let techsToAssign = [];
+    const mode = document.querySelector('input[name="assignMode"]:checked').value;
+    const target = document.getElementById('assignTarget').value;
+    
+    if (!target) { alert("Wybierz technika lub team!"); return; }
+    if (mode === 'tech') {
+       techsToAssign = (appData.techniciansDetails || []).filter(t => t.name === target && isActiveTechnician(t)).map(t => t.name);
+    } else {
+       techsToAssign = (appData.techniciansDetails || []).filter(t => t.team === target && isActiveTechnician(t)).map(t => t.name);
+    }
+    if (techsToAssign.length === 0) {
+      alert("Wybrana grupa nie ma techników. Nie można przypisać zadania.");
+      return;
+    }
+      const btn = document.getElementById('submitBtn');
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Zapisywanie w bazie...';
+      btn.disabled = true;
+      const formData = {
+        techniciansArray: techsToAssign,
+        workDate: document.getElementById('workDate').value,
+        timeStart: timeStart,
+        timeEnd: timeEnd,
+        deck: selectedDeck,
+        area: selectedArea,
+        roomId: selectedRoom,
+        roomSurface: selectedRoomSurface,
+        taskType: taskType,
+        taskUnit: taskUnit,
+        taskQuantity: taskQuantity,
+        taskLength: taskLength,
+        taskLengthConfirmed: taskLengthConfirmed,
+        taskName: selectedTask,
+        taskRow: document.getElementById('taskRowNumber').value,
+        progress: document.getElementById('progressRange').value,
+        isCustomTask: isCustomTaskFlag,
+        isExtraJob: isExtraJob,
+        customTaskId: customTaskIdValue
+      };
+
+      google.script.run
+        .withSuccessHandler(res => {
+          if (res && res.success) {
+            alert(res.message);
+            // ZMIANA: Odśwież pełne dane ze skoroszytu, aby nowe zadanie z DK3 zostało załadowane
+            fetchData();
+            document.getElementById('deckSelect').value = "";
+            document.getElementById('areaSelect').value = "";
+            document.getElementById('roomSelect').value = "";
+            document.getElementById('customAreaInput').value = "";
+            document.getElementById('customRoomInput').value = "";
+            document.getElementById('taskSelect').value = "";
+            document.getElementById('taskUnitSelect').value = "";
+            document.getElementById('taskQuantityInput').value = "";
+            toggleTaskQuantity();
+            document.getElementById('customTaskInput').value = "";
+            document.getElementById('customTaskIdInput').value = "";
+            document.getElementById('timeStart').value = "";
+            document.getElementById('timeEnd').value = "";
+          } else {
+            alert("Błąd: " + (res ? res.message : "Brak odpowiedzi serwera"));
+          }
+          btn.innerHTML = '<span>Zapisz i prześlij</span><i class="fa-solid fa-paper-plane ml-3"></i>';
+          btn.disabled = false;
+        })
+        .submitWorkReport(formData);
+    }
+  }
+
+  function promptAddTechnician() {
+    const name = prompt("Podaj imię i nazwisko nowego technika:");
+    if (name && name.trim() !== "") {
+      refreshData();
+      google.script.run
+        .withSuccessHandler(response => {
+          if(response.success) {
+            alert(response.message);
+            fetchData();
+          } else {
+            alert("Błąd: " + response.message);
+            fetchData();
+          }
+        })
+        .addTechnician(name);
+    }
+  }
+</script>
