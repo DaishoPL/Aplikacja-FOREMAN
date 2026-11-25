@@ -2,8 +2,34 @@
  * BACKEND - Logika aplikacji (Apps Script)
  */
 
-// Konfiguracja: ID folderu na Dysku Google, gdzie mają być zapisywane raporty
-const TARGET_FOLDER_ID = "1svYq84kpL3m6fenoE5aVHvyCZZO3dvzp";
+function getProjectFolder_(folderName) {
+ const normalize = name => String(name).trim().toLowerCase();
+ const onlyFolder = (iterator, description) => {
+   const folders = [];
+   while (iterator.hasNext()) folders.push(iterator.next());
+   if (folders.length !== 1) throw new Error(description + ': oczekiwano dokładnie jednego folderu, znaleziono ' + folders.length + '.');
+   return folders[0];
+ };
+ const matchingFolders = (parent, name) => {
+   const matches = [];
+   const folders = parent.getFolders();
+   while (folders.hasNext()) {
+     const folder = folders.next();
+     if (normalize(folder.getName()) === normalize(name)) matches.push(folder);
+   }
+   return matches;
+ };
+ const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+ if (!spreadsheet) throw new Error('Skrypt nie jest powiązany z arkuszem źródłowym.');
+ const tableFolder = onlyFolder(DriveApp.getFileById(spreadsheet.getId()).getParents(), 'Folder arkusza źródłowego');
+ if (normalize(tableFolder.getName()) !== 'tabela') throw new Error('Arkusz źródłowy musi znajdować się bezpośrednio w folderze Tabela.');
+ const project = onlyFolder(tableFolder.getParents(), 'Folder nadrzędny Tabela');
+ const tables = matchingFolders(project, 'Tabela');
+ if (tables.length !== 1) throw new Error('Oczekiwano dokładnie jednego folderu Tabela, znaleziono ' + tables.length + '.');
+ const matches = matchingFolders(project, folderName);
+ if (matches.length !== 1) throw new Error('Oczekiwano dokładnie jednego folderu ' + folderName + ', znaleziono ' + matches.length + '.');
+ return matches[0];
+}
 
 const BRAND_CONFIG = {
  projectName: "Aplikacja-FOREMAN",
@@ -1364,23 +1390,10 @@ function getTimeByWeekReport(includeBreaks) {
  const sheetSpis = ss.getSheetByName('Spis wykonanych prac');
  if (!sheetSpis || sheetSpis.getLastRow() < 2) return { decks: {}, allTasks: [], allWeeks: [] };
 
- const projectTasks = new Set();
- const sheetCandido = ss.getSheetByName('Lista zadań');
- if (sheetCandido && sheetCandido.getLastRow() >= 3) {
- // ZMIANA 3: Indeks kolumny zadania 9 -> 10
- const candidoTasks = sheetCandido.getRange(3, 10, sheetCandido.getLastRow() - 2, 1).getValues();
- candidoTasks.forEach(row => {
- const taskName = String(row[0]).trim();
- if (taskName && !taskName.includes("[ANULOWANE]") && !taskName.toLowerCase().includes("extra job")) {
- projectTasks.add(taskName);
- }
- });
- }
-
  let reportData = {
  settings: { includeBreaks: includeBreaks },
  decks: {},
- allTasks: Array.from(projectTasks),
+ allTasks: [],
  allWeeks: new Set(),
  extraTasks: [],
  extraDeck: { tasks: {} }
@@ -1406,8 +1419,8 @@ function getTimeByWeekReport(includeBreaks) {
  let rowDeck = String(spisData[i][3]).trim().toUpperCase();
  let rowTask = String(spisData[i][5]).trim();
  let taskId = String(spisData[i][6]).trim();
- let isCancelled = rowTask.includes("[ANULOWANE]") || taskId.includes("[ANULOWANE]");
- let isBreak = rowTask.toLowerCase().includes("przerwa") || rowTask.toLowerCase().includes("break");
+ let isCancelled = rowTask.toUpperCase().includes("ANULOWANE") || taskId.toUpperCase().includes("ANULOWANE");
+ let isBreak = /przerwa|break|brake/i.test(rowTask) || /przerwa|break|brake/i.test(rowDeck);
 
  if (isBreak && !includeBreaks) continue;
  if (!rowStart || !rowEnd || isCancelled || !rowDeck || !rowTask) continue;
@@ -1421,7 +1434,7 @@ function getTimeByWeekReport(includeBreaks) {
  duration = Math.round(duration * 100) / 100;
 
  if (duration > 0) {
- let isExtraJob = taskId.toLowerCase().includes("- extra job");
+ let isExtraJob = /-\s*extra job/i.test(rowTask) || /-\s*extra job/i.test(taskId);
  if (isExtraJob) {
  let extraTaskKey = rowDeck + ", " + rowTask;
  if (!reportData.extraDeck.tasks[extraTaskKey]) {
@@ -1447,10 +1460,8 @@ function getTimeByWeekReport(includeBreaks) {
  }
  reportData.decks[rowDeck].tasks[rowTask].weeklyHours[weekNum] += duration;
  reportData.decks[rowDeck].tasks[rowTask].total += duration;
- if(rowTask === "Supervision") {
  if (reportData.allTasks.indexOf(rowTask) === -1) {
  reportData.allTasks.push(rowTask);
- }
  }
  }
  reportData.allWeeks.add(weekNum);
@@ -1946,34 +1957,7 @@ function generateZleceniaIProtokolyData(dateFromStr, dateToStr, includeBreaks) {
 }
 
 function getApplicationReportFolders_() {
- const findChildFolder = (parent, name) => {
-   const folders = parent.getFoldersByName(name);
-   return folders.hasNext() ? folders.next() : null;
- };
- const spreadsheetFile = DriveApp.getFileById(SpreadsheetApp.getActiveSpreadsheet().getId());
- const parents = spreadsheetFile.getParents();
- let applicationFolder = null;
- while (parents.hasNext()) {
-   let current = parents.next();
-   for (let depth = 0; depth < 6 && current; depth++) {
-     if (current.getName() === 'Aplikacja') {
-       applicationFolder = current;
-       break;
-     }
-     const ancestors = current.getParents();
-     current = ancestors.hasNext() ? ancestors.next() : null;
-   }
-   if (applicationFolder) break;
- }
- if (!applicationFolder) {
-   throw new Error('Nie znaleziono folderu Aplikacja nadrzędnego dla aktywnego arkusza. Sprawdzono rodziców pliku aplikacji.');
- }
-
- const getOrCreate = name => {
-   const folders = applicationFolder.getFoldersByName(name);
-   return folders.hasNext() ? folders.next() : applicationFolder.createFolder(name);
- };
- return { zlec: getOrCreate('ZLEC'), pzo: getOrCreate('PZO') };
+ return { zlec: getProjectFolder_('ZLEC'), pzo: getProjectFolder_('PZO') };
 }
 
 function getReportProjectData_() {
@@ -2271,7 +2255,7 @@ function generateStyledExcelReport(reportData, reportType) {
  const isWeekly = reportType === 'weekly';
  const baseName = "Candido_" + (isWeekly ? reportData.weekInfo.weekNumber : 'Annual') + "_Report";
  const tempFileName = baseName + "_TEMP_" + Date.now();
- const targetFolder = DriveApp.getFolderById(TARGET_FOLDER_ID);
+ const targetFolder = getProjectFolder_('Raporty');
 
  const spreadsheet = SpreadsheetApp.create(tempFileName);
  const tempFile = DriveApp.getFileById(spreadsheet.getId());
@@ -2366,7 +2350,7 @@ function generateStyledExcelReport(reportData, reportType) {
  currentRow++;
  };
 
- if (deckName !== "TRAVEL") {
+ if (deckName !== "TRAVEL" && (isWeekly || reportData.allTasks.includes("Supervision"))) {
  renderRow("Supervision", 0);
  }
 
@@ -2389,7 +2373,7 @@ function generateStyledExcelReport(reportData, reportType) {
  });
 
  let renderedRowCount = taskIndex;
- if (deckName !== "TRAVEL") {
+ if (deckName !== "TRAVEL" && (isWeekly || reportData.allTasks.includes("Supervision"))) {
  renderedRowCount += 1;
  } else {
  renderedRowCount = filteredTasks.length;
@@ -2557,10 +2541,24 @@ function renameTeam(oldName, newName) {
  }
 }
 
+function getCostFolderUrl() {
+ return getProjectFolder_('Rachunki').getUrl();
+}
+
+function saveReportPdf(base64Data, fileName, reportType) {
+ const folderName = reportType === 'cards' ? 'protokoły' : reportType === 'report' ? 'Raporty' : null;
+ if (!folderName) throw new Error('Nieznany rodzaj raportu PDF.');
+ const match = /^data:application\/pdf(?:;[^,]*)?;base64,(.+)$/i.exec(base64Data);
+ if (!match) throw new Error('Nieprawidłowe dane pliku PDF.');
+ const folder = getProjectFolder_(folderName);
+ const file = folder.createFile(Utilities.newBlob(Utilities.base64Decode(match[1]), 'application/pdf', fileName));
+ if (!file || !file.getId()) throw new Error('Nie potwierdzono zapisu pliku PDF na Dysku.');
+ return { success: true, fileId: file.getId() };
+}
+
 function uploadCostFile(base64Data, fileName, costName, costDate, fileIndex = 0, totalFiles = 1) {
  try {
- const folderId = "1dtvg-bx_ePiMfsuf2kf0vGadlzNgHeeI";
- const folder = DriveApp.getFolderById(folderId);
+ const folder = getProjectFolder_('Rachunki');
  
 const parts = base64Data.split(',');
  const contentType = parts[0].match(/:(.*?);/)[1];
@@ -2760,6 +2758,7 @@ function exportRevOceanTimesheet() {
  const ss = SpreadsheetApp.getActiveSpreadsheet();
  const sheet = ss.getSheetByName('REV OCEAN - timesheet');
  if (!sheet) return { error: "Brak zakładki 'REV OCEAN - timesheet' w bazie." };
+ const targetFolder = getProjectFolder_('TIME SHEET');
 
  const tempFileName = "Eksport_Timesheet_" + new Date().getTime();
  const tempSs = SpreadsheetApp.create(tempFileName);
@@ -2771,7 +2770,6 @@ const defaultSheet = tempSs.getSheets()[0];
  tempSs.deleteSheet(defaultSheet);
  }
 
- const targetFolder = DriveApp.getFolderById(TARGET_FOLDER_ID);
  const tempFile = DriveApp.getFileById(tempSs.getId());
  tempFile.moveTo(targetFolder);
 
